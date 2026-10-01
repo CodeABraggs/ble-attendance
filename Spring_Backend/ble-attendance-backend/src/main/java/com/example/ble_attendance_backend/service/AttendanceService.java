@@ -41,6 +41,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -48,7 +49,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class AttendanceService {
     /** Actions the phone checks with ML Kit; the app's LivenessAction enum uses the same names. */
     static final List<String> LIVENESS_ACTIONS = List.of("BLINK", "TURN_LEFT", "TURN_RIGHT", "SMILE");
-    private static final int ACTIONS_PER_CHALLENGE = 2;
     private static final Duration CHALLENGE_LIFETIME = Duration.ofMinutes(2);
 
     private final SecureRandom random = new SecureRandom();
@@ -60,11 +60,13 @@ public class AttendanceService {
     private final AttendanceChallengeRepository challengeRepository;
     private final AttendanceVerificationRepository verificationRepository;
     private final FaceService faceService;
+    private final int actionsPerChallenge;
 
     public AttendanceService(AttendanceSessionRepository sessionRepository, AttendanceRecordRepository recordRepository,
                              ClassroomRepository classroomRepository, ClassroomMembershipRepository membershipRepository,
                              UserRepository userRepository, AttendanceChallengeRepository challengeRepository,
-                             AttendanceVerificationRepository verificationRepository, FaceService faceService) {
+                             AttendanceVerificationRepository verificationRepository, FaceService faceService,
+                             @Value("${attendance.face.challenge-actions:0}") int actionsPerChallenge) {
         this.sessionRepository = sessionRepository;
         this.recordRepository = recordRepository;
         this.classroomRepository = classroomRepository;
@@ -73,6 +75,7 @@ public class AttendanceService {
         this.challengeRepository = challengeRepository;
         this.verificationRepository = verificationRepository;
         this.faceService = faceService;
+        this.actionsPerChallenge = Math.clamp(actionsPerChallenge, 0, LIVENESS_ACTIONS.size());
     }
 
     @Transactional
@@ -146,7 +149,7 @@ public class AttendanceService {
         challengeRepository.deleteExpired(now);
         List<String> actions = new ArrayList<>(LIVENESS_ACTIONS);
         Collections.shuffle(actions, random);
-        actions = List.copyOf(actions.subList(0, ACTIONS_PER_CHALLENGE));
+        actions = List.copyOf(actions.subList(0, actionsPerChallenge));
         byte[] nonceBytes = new byte[32];
         random.nextBytes(nonceBytes);
         String nonce = Base64.getUrlEncoder().withoutPadding().encodeToString(nonceBytes);

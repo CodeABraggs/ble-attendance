@@ -134,7 +134,10 @@ private fun CameraLivenessCheck(
         Spacer(modifier = Modifier.height(16.dp))
         when (val current = state) {
             is FaceCaptureState.Instruct -> {
-                Text("Step ${current.step} of ${current.totalSteps}", style = MaterialTheme.typography.bodySmall)
+                // Two captures are automatic; only show steps when there are actions to perform.
+                if (current.totalSteps > 2) {
+                    Text("Step ${current.step} of ${current.totalSteps}", style = MaterialTheme.typography.bodySmall)
+                }
                 Text(current.message, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
             }
             FaceCaptureState.Processing, is FaceCaptureState.Done -> {

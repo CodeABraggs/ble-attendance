@@ -23,7 +23,8 @@ fun FaceEnrollmentScreen(
     var capturing by remember { mutableStateOf(false) }
     var submitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    val actions = remember { LivenessAction.random(2) }
+    // Enrollment is just "look at the camera"; the anti-spoofing model still checks for photos/screens.
+    val actions = remember { emptyList<LivenessAction>() }
     val scope = rememberCoroutineScope()
 
     if (capturing) {
@@ -59,7 +60,7 @@ fun FaceEnrollmentScreen(
         Spacer(modifier = Modifier.height(16.dp))
         Text(
             "Attendance is only accepted when your face matches the one you enroll now, so nobody else can " +
-                "mark attendance with your phone. Use good light, remove sunglasses, and follow the on-screen steps. " +
+                "mark attendance with your phone. Face a light source, remove sunglasses, and look at the camera. " +
                 "Only your teacher can reset this later.",
             textAlign = TextAlign.Center
         )

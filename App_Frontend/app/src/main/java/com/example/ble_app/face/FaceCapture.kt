@@ -58,10 +58,10 @@ sealed class FaceCaptureState {
 }
 
 /**
- * Drives a liveness check from camera frames: a frontal capture, the random [actions], and a second
- * frontal capture, all by the same tracked face. Then it runs the face models on the two captures.
- * A photo can't blink or turn on request, and a recording can't know the random order in advance;
- * the anti-spoofing model additionally rejects printed photos and screens held up to the camera.
+ * Captures a face from camera frames: two sharp, straight-on captures of the same tracked face, with any
+ * [actions] performed in between. Then it runs the face models on the two captures. With no actions the
+ * user just looks at the camera; the anti-spoofing model still rejects printed photos and screens.
+ * Actions (blink/turn/smile on request) add protection against photos and videos at the cost of effort.
  */
 class FaceCaptureAnalyzer(
     context: Context,
@@ -85,6 +85,7 @@ class FaceCaptureAnalyzer(
     private var sawEyesClosed = false
     private val captures = mutableListOf<Bitmap>()
     private var startedAt = 0L
+    private var lastCaptureAt = 0L
 
     // Written from the main thread by close(), read on the analysis thread.
     @Volatile
@@ -105,7 +106,7 @@ class FaceCaptureAnalyzer(
         }
         if (startedAt == 0L) startedAt = System.currentTimeMillis()
         if (System.currentTimeMillis() - startedAt > timeoutMillis) {
-            fail("Took too long. Try again in good light.")
+            fail("Couldn't get a clear picture. Face a light source, hold the phone at eye level, and try again.")
             return
         }
 
@@ -122,8 +123,8 @@ class FaceCaptureAnalyzer(
         if (trackingId == null) {
             trackingId = face.trackingId
         } else if (face.trackingId != null && face.trackingId != trackingId) {
-            // A different face appeared: every step must be done by the same person.
-            restart("Face changed. Starting again: ")
+            // A different face appeared: both captures must be of the same person.
+            restart()
             return
         }
         if (face.boundingBox.width() < frame.width * MIN_FACE_FRACTION) {
@@ -137,8 +138,16 @@ class FaceCaptureAnalyzer(
                 instruct(FRONTAL_INSTRUCTION)
                 return
             }
+            // Use two distinct moments, not two copies of the same instant.
+            if (System.currentTimeMillis() - lastCaptureAt < MIN_CAPTURE_GAP_MILLIS) return
             val crop = FaceAligner.alignedCrop(frame, face) ?: return
+            // Blurry frames are skipped rather than failing the whole check.
+            if (models.sharpness(crop) < FaceModels.MIN_SHARPNESS) {
+                instruct("Hold still")
+                return
+            }
             captures += crop
+            lastCaptureAt = System.currentTimeMillis()
             advance()
             if (step == totalSteps) process()
             return
@@ -182,21 +191,17 @@ class FaceCaptureAnalyzer(
         _state.value = FaceCaptureState.Instruct(message, (step + 1).coerceAtMost(totalSteps), totalSteps)
     }
 
-    private fun restart(prefix: String) {
+    private fun restart() {
         step = 0
         trackingId = null
         captures.clear()
-        instruct(prefix + FRONTAL_INSTRUCTION)
+        instruct(FRONTAL_INSTRUCTION)
     }
 
     private fun process() {
         finished = true
         _state.value = FaceCaptureState.Processing
         val (first, second) = captures[0] to captures[1]
-        if (models.sharpness(first) < FaceModels.MIN_SHARPNESS || models.sharpness(second) < FaceModels.MIN_SHARPNESS) {
-            fail("The image was too blurry. Hold the phone still in good light and try again.")
-            return
-        }
         val spoofScore = max(models.spoofScore(first), models.spoofScore(second))
         val (embeddingA, embeddingB) = models.embed(first, second)
         if (FaceModels.cosine(embeddingA, embeddingB) < SAME_PERSON_SIMILARITY) {
@@ -226,14 +231,16 @@ class FaceCaptureAnalyzer(
     }
 
     private companion object {
-        const val FRONTAL_INSTRUCTION = "Look straight at the camera"
-        const val MIN_FACE_FRACTION = 0.25f
-        const val FRONTAL_DEGREES = 12f
+        const val FRONTAL_INSTRUCTION = "Look at the camera and hold still"
+        const val MIN_FACE_FRACTION = 0.2f
+        const val FRONTAL_DEGREES = 20f
+        const val MIN_CAPTURE_GAP_MILLIS = 400L
         const val TURN_DEGREES = 25f
         // ML Kit reports a positive Y angle when the person turns to their own left. Flip to -1 if a
         // device test shows the opposite.
         const val TURN_LEFT_SIGN = 1f
-        const val EYES_OPEN = 0.6f
+        // Lenient so glasses and squinting in bright light still count as eyes open.
+        const val EYES_OPEN = 0.4f
         const val EYES_CLOSED = 0.2f
         const val SMILING = 0.8f
         // Both frontal captures must be the same person, or someone swapped in mid-check.

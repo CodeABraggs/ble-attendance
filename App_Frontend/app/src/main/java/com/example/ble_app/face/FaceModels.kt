@@ -90,7 +90,8 @@ class FaceModels private constructor(context: Context) {
     companion object {
         const val EMBEDDING_LENGTH = 192
         const val SPOOF_THRESHOLD = 0.2f
-        const val MIN_SHARPNESS = 1000
+        // Minimum Laplacian edge count for a usable face crop; lower it if dim rooms never pass.
+        const val MIN_SHARPNESS = 600
         private const val EMBED_SIZE = 112
         private const val SPOOF_SIZE = 256
         private const val LAPLACE_EDGE_THRESHOLD = 50
