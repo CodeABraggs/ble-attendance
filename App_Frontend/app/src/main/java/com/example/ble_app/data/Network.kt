@@ -2,12 +2,16 @@ package com.example.ble_app.data
 
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import retrofit2.HttpException
+import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.*
 
-// Endpoints with no response body the app needs return Unit: a `Void` return type makes Retrofit's
-// suspend adapter throw KotlinNullPointerException even when the request succeeded.
+// Endpoints whose body the app ignores return Unit: a `Void` return type makes Retrofit's suspend adapter
+// throw KotlinNullPointerException even when the request succeeded. Endpoints that reply 201/204 with no
+// body at all return Response<Unit> (checked with requireSuccess), because Retrofit hands those back as a
+// null body, which a plain Unit return type also rejects.
 interface ApiService {
     // AUTH
     @POST("api/auth/register")
@@ -20,17 +24,17 @@ interface ApiService {
     suspend fun me(): MeResponse
 
     @POST("api/auth/logout")
-    suspend fun logout(@Header("Authorization") authorization: String): Unit
+    suspend fun logout(@Header("Authorization") authorization: String): Response<Unit>
 
     // DEVICE AND FACE
     @PUT("api/devices/me")
-    suspend fun bindDevice(@Body request: BindDeviceRequest): Unit
+    suspend fun bindDevice(@Body request: BindDeviceRequest): Response<Unit>
 
     @POST("api/face/enroll")
-    suspend fun enrollFace(@Body request: EnrollFaceRequest): Unit
+    suspend fun enrollFace(@Body request: EnrollFaceRequest): Response<Unit>
 
     @DELETE("api/classrooms/{classId}/students/{studentId}/face")
-    suspend fun resetStudentFace(@Path("classId") classId: Int, @Path("studentId") studentId: Int): Unit
+    suspend fun resetStudentFace(@Path("classId") classId: Int, @Path("studentId") studentId: Int): Response<Unit>
 
     // CLASSROOM (the caller is identified by the bearer token)
     @POST("api/classrooms")
@@ -180,4 +184,9 @@ object NetworkConfig {
             .build()
             .create(ApiService::class.java)
     }
+}
+
+/** For empty-body endpoints: throws the same HttpException a normal call would on a non-2xx reply. */
+fun <T> Response<T>.requireSuccess() {
+    if (!isSuccessful) throw HttpException(this)
 }

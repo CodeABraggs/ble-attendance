@@ -71,7 +71,7 @@ object Repository {
         try {
             // Generating the hardware key the first time can take a moment; keep it off the main thread.
             val publicKey = withContext(Dispatchers.Default) { DeviceKey.publicKeyBase64() }
-            NetworkConfig.apiService.bindDevice(BindDeviceRequest(publicKey))
+            NetworkConfig.apiService.bindDevice(BindDeviceRequest(publicKey)).requireSuccess()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -163,7 +163,7 @@ object Repository {
         clearSession()
         if (oldToken != null) {
             try {
-                NetworkConfig.apiService.logout("Bearer $oldToken")
+                NetworkConfig.apiService.logout("Bearer $oldToken").requireSuccess()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -230,7 +230,7 @@ object Repository {
                     spoofScoreBp = face.spoofScoreBp,
                     signature = DeviceKey.sign("ENROLL|${user.userId}|${sample.digest}")
                 )
-            )
+            ).requireSuccess()
         }
         updateUser(user.copy(faceEnrolled = true))
     }
@@ -262,7 +262,7 @@ object Repository {
     }
 
     suspend fun resetStudentFace(classId: Int, studentId: Int) = apiCall {
-        NetworkConfig.apiService.resetStudentFace(classId, studentId)
+        NetworkConfig.apiService.resetStudentFace(classId, studentId).requireSuccess()
     }
 
     /** Encodes a face sample and the digest that is signed (must match FaceService.sampleDigest on the server). */
