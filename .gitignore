@@ -1,0 +1,33 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# IDE and editor metadata
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# Environment and machine-local configuration
+.env
+.env.*
+!.env.example
+*.local
+local.properties
+application-local.properties
+
+# Android / Gradle
+.gradle/
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Java / Maven
+**/target/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp

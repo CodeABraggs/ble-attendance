@@ -1,0 +1,57 @@
+package com.example.ble_app.data
+
+enum class UserRole {
+    TEACHER, STUDENT
+}
+
+data class User(
+    val userId: Int,
+    val email: String,
+    val role: String
+)
+
+data class Classroom(
+    val classId: Int,
+    val name: String,
+    val code: String,
+    val teacherId: Int,
+    val memberCount: Int? = 0,
+    val createdAt: String? = null
+)
+
+data class JoinClassRequest(
+    val studentId: Int,
+    val code: String
+)
+
+data class CreateClassRequest(
+    val teacherId: Int,
+    val name: String
+)
+
+data class AttendanceSession(
+    val sessionId: Int,
+    val classId: Int,
+    val date: String,
+    val startTime: String,
+    val endTime: String,
+    val status: String? = "INACTIVE"
+)
+
+data class AttendanceRecord(
+    val studentId: Int,
+    val email: String,
+    val status: String
+)
+
+data class UpdateAttendanceRequest(
+    val status: String
+)
+
+data class StudentAttendanceHistoryRecord(
+    val sessionId: Int,
+    val date: String,
+    val startTime: String,
+    val endTime: String,
+    val status: String
+)
