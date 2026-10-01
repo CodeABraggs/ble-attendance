@@ -3,20 +3,29 @@ package com.example.ble_attendance_backend.exception;
 import com.example.ble_attendance_backend.dto.ApiError;
 import java.util.Map;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @RestControllerAdvice
 public class RestExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(RestExceptionHandler.class);
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiError> handleValidation(MethodArgumentNotValidException exception) {
         Map<String, String> fieldErrors = exception.getBindingResult().getFieldErrors().stream()
-                .collect(Collectors.toMap(FieldError::getField, FieldError::getDefaultMessage, (first, second) -> first));
+                .collect(Collectors.toMap(FieldError::getField,
+                        error -> error.getDefaultMessage() == null ? "is invalid" : error.getDefaultMessage(),
+                        (first, second) -> first));
         return ResponseEntity.badRequest().body(new ApiError(
                 java.time.Instant.now(), 400, "Bad Request", "Request validation failed", fieldErrors));
     }
@@ -51,8 +60,22 @@ public class RestExceptionHandler {
         return response(HttpStatus.CONFLICT, "The request conflicts with existing data");
     }
 
+    // Malformed JSON, an unknown enum value, or a non-numeric id in the path.
+    @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})
+    public ResponseEntity<ApiError> handleUnreadableRequest() {
+        return response(HttpStatus.BAD_REQUEST, "The request is malformed");
+    }
+
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ApiError> handleUnexpectedException() {
+    public ResponseEntity<ApiError> handleUnexpectedException(Exception exception) {
+        // Spring's own errors (unknown URL, wrong HTTP method, ...) carry their proper status.
+        if (exception instanceof ErrorResponse errorResponse) {
+            HttpStatus status = HttpStatus.resolve(errorResponse.getStatusCode().value());
+            if (status != null && status.is4xxClientError()) {
+                return response(status, status == HttpStatus.NOT_FOUND ? "No such endpoint. Check that the app and server versions match" : status.getReasonPhrase());
+            }
+        }
+        log.error("Unexpected error handling request", exception);
         return response(HttpStatus.INTERNAL_SERVER_ERROR, "An unexpected server error occurred");
     }
 
