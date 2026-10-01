@@ -15,6 +15,7 @@ import com.example.ble_app.data.Classroom
 import com.example.ble_app.data.Repository
 import kotlinx.coroutines.launch
 import java.util.*
+import java.time.ZoneId
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,8 +45,8 @@ fun AttendanceSessionConfigScreen(
         val min = calendar.get(Calendar.MINUTE)
         startTime = String.format(Locale.US, "%02d:%02d", h, min)
         
-        // Default end time 1 hour later
-        endTime = String.format(Locale.US, "%02d:%02d", (h + 1) % 24, min)
+        // Default end time 1 hour later, capped at the end of the day
+        endTime = if (h == 23) "23:59" else String.format(Locale.US, "%02d:%02d", h + 1, min)
     }
 
     Scaffold(
@@ -135,7 +136,7 @@ fun AttendanceSessionConfigScreen(
                         error = null
                         scope.launch {
                             try {
-                                val session = Repository.createAttendanceSession(classroom.classId, date, startTime, endTime)
+                                val session = Repository.createAttendanceSession(classroom.classId, date, startTime, endTime, ZoneId.systemDefault().id)
                                 onSessionCreated(session)
                             } catch (e: Exception) {
                                 error = e.message ?: "Failed to create session"

@@ -1,65 +1,60 @@
 package com.example.ble_app
 
-import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
-import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.core.app.ActivityCompat
-import com.example.ble_app.bluetooth.BleAdvertiser
-import com.example.ble_app.bluetooth.BleScanner
+import com.example.ble_app.bluetooth.BlePermissions
 import com.example.ble_app.data.Classroom
 import com.example.ble_app.data.Repository
 import com.example.ble_app.ui.*
 import com.example.ble_app.ui.theme.BLE_APPTheme
 
 sealed class Screen {
-    object RoleSelection : Screen()
-    object StudentLogin : Screen()
-    object TeacherLogin : Screen()
-    object StudentRegister : Screen()
-    object TeacherRegister : Screen()
+    open val requiresLogin: Boolean = true
+
+    object RoleSelection : Screen() { override val requiresLogin = false }
+    object StudentLogin : Screen() { override val requiresLogin = false }
+    object TeacherLogin : Screen() { override val requiresLogin = false }
+    object StudentRegister : Screen() { override val requiresLogin = false }
+    object TeacherRegister : Screen() { override val requiresLogin = false }
     object TeacherDashboard : Screen()
     object StudentDashboard : Screen()
     object CreateClassroom : Screen()
     object JoinClassroom : Screen()
-    data class ClassroomDetails(val classroom: Classroom, val initialActiveSessionId: Int? = null) : Screen()
+    data class ClassroomDetails(val classroom: Classroom) : Screen()
     data class AttendanceSessionConfig(val classroom: Classroom) : Screen()
     data class AttendanceRecords(val sessionId: Int, val classroom: Classroom) : Screen()
 }
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var bleAdvertiser: BleAdvertiser
-    private lateinit var bleScanner: BleScanner
+    private val viewModel: MainViewModel by viewModels()
 
-    private val bluetoothManager by lazy {
-        getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-    }
-    
-    private val bluetoothAdapter by lazy {
-        bluetoothManager.adapter
+    private val bluetoothAdapter: BluetoothAdapter? by lazy {
+        (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     }
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val allGranted = permissions.entries.all { it.value }
-        if (!allGranted) {
+        if (permissions.values.all { it }) {
+            // On Android 12+ enabling Bluetooth needs BLUETOOTH_CONNECT, so ask only once it's granted.
+            checkBluetoothEnabled()
+        } else {
             Toast.makeText(this, "Permissions denied. BLE functionality may not work.", Toast.LENGTH_LONG).show()
         }
     }
@@ -67,124 +62,31 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        
-        bleAdvertiser = BleAdvertiser(this)
-        bleScanner = BleScanner(this)
+        Repository.init(applicationContext)
 
-        checkPermissions()
-        checkBluetoothEnabled()
+        // Only on a fresh start, not after rotation.
+        if (savedInstanceState == null && ensureBlePermissions()) {
+            checkBluetoothEnabled()
+        }
 
+        val vm = viewModel
         setContent {
             BLE_APPTheme {
-                var currentScreen by remember { mutableStateOf<Screen>(Screen.RoleSelection) }
-                val user by Repository.currentUser.collectAsState()
-
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     Box(modifier = Modifier.padding(innerPadding)) {
-                        when (val screen = currentScreen) {
-                            is Screen.RoleSelection -> HomeScreen(
-                                onTeacherModeClick = { currentScreen = Screen.TeacherLogin },
-                                onStudentModeClick = { currentScreen = Screen.StudentLogin }
-                            )
-                            is Screen.StudentLogin -> LoginScreen(
-                                role = "STUDENT",
-                                onLoginSuccess = { currentScreen = Screen.StudentDashboard },
-                                onNavigateToRegister = { currentScreen = Screen.StudentRegister },
-                                onBack = { currentScreen = Screen.RoleSelection }
-                            )
-                            is Screen.TeacherLogin -> LoginScreen(
-                                role = "TEACHER",
-                                onLoginSuccess = { currentScreen = Screen.TeacherDashboard },
-                                onNavigateToRegister = { currentScreen = Screen.TeacherRegister },
-                                onBack = { currentScreen = Screen.RoleSelection }
-                            )
-                            is Screen.StudentRegister -> RegisterScreen(
-                                role = "STUDENT",
-                                onRegisterSuccess = { currentScreen = Screen.StudentLogin },
-                                onBack = { currentScreen = Screen.StudentLogin }
-                            )
-                            is Screen.TeacherRegister -> RegisterScreen(
-                                role = "TEACHER",
-                                onRegisterSuccess = { currentScreen = Screen.TeacherLogin },
-                                onBack = { currentScreen = Screen.TeacherLogin }
-                            )
-                            is Screen.TeacherDashboard -> TeacherDashboard(
-                                onClassroomClick = { currentScreen = Screen.ClassroomDetails(it) },
-                                onCreateClassroom = { currentScreen = Screen.CreateClassroom },
-                                onLogout = {
-                                    Repository.logout()
-                                    currentScreen = Screen.RoleSelection
-                                }
-                            )
-                            is Screen.StudentDashboard -> StudentDashboard(
-                                onClassroomClick = { currentScreen = Screen.ClassroomDetails(it) },
-                                onJoinClassroom = { currentScreen = Screen.JoinClassroom },
-                                onLogout = {
-                                    Repository.logout()
-                                    currentScreen = Screen.RoleSelection
-                                }
-                            )
-                            is Screen.CreateClassroom -> CreateClassroomScreen(
-                                onClassroomCreated = { currentScreen = Screen.TeacherDashboard },
-                                onBack = { currentScreen = Screen.TeacherDashboard }
-                            )
-                            is Screen.JoinClassroom -> JoinClassroomScreen(
-                                onJoined = { currentScreen = Screen.StudentDashboard },
-                                onBack = { currentScreen = Screen.StudentDashboard }
-                            )
-                            is Screen.ClassroomDetails -> ClassroomDetailsScreen(
-                                classroom = screen.classroom,
-                                initialActiveSessionId = screen.initialActiveSessionId,
-                                bleAdvertiser = bleAdvertiser,
-                                bleScanner = bleScanner,
-                                onStartSessionClick = { currentScreen = Screen.AttendanceSessionConfig(screen.classroom) },
-                                onSessionClick = { sessionId -> currentScreen = Screen.AttendanceRecords(sessionId, screen.classroom) },
-                                onBack = {
-                                    currentScreen = if (user?.role == "TEACHER") {
-                                        Screen.TeacherDashboard
-                                    } else {
-                                        Screen.StudentDashboard
-                                    }
-                                }
-                            )
-                            is Screen.AttendanceSessionConfig -> AttendanceSessionConfigScreen(
-                                classroom = screen.classroom,
-                                onSessionCreated = { session -> 
-                                    currentScreen = Screen.ClassroomDetails(screen.classroom, session.sessionId) 
-                                },
-                                onBack = { currentScreen = Screen.ClassroomDetails(screen.classroom) }
-                            )
-                            is Screen.AttendanceRecords -> AttendanceRecordsScreen(
-                                sessionId = screen.sessionId,
-                                classroom = screen.classroom,
-                                onBack = { currentScreen = Screen.ClassroomDetails(screen.classroom) }
-                            )
-                        }
+                        AppNavigation(vm)
                     }
                 }
             }
         }
     }
 
-    private fun checkPermissions() {
-        val permissions = mutableListOf<String>()
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
-            permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
-            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
-        }
-
-        val missingPermissions = permissions.filter {
-            ActivityCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (missingPermissions.isNotEmpty()) {
-            requestPermissionLauncher.launch(missingPermissions.toTypedArray())
-        }
+    /** Returns true if BLE permissions are granted; otherwise asks for them and returns false. */
+    private fun ensureBlePermissions(): Boolean {
+        val missing = BlePermissions.missing(this)
+        if (missing.isEmpty()) return true
+        requestPermissionLauncher.launch(missing.toTypedArray())
+        return false
     }
 
     private fun checkBluetoothEnabled() {
@@ -193,20 +95,103 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Bluetooth not supported on this device", Toast.LENGTH_LONG).show()
             return
         }
-
-        if (!adapter.isEnabled) {
-            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+        if (!adapter.isEnabled && BlePermissions.missing(this).isEmpty()) {
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                        startActivity(enableBtIntent)
-                    }
-                } else {
-                    startActivity(enableBtIntent)
-                }
+                startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
             } catch (e: Exception) {
                 Toast.makeText(this, "Could not request Bluetooth enable", Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    @androidx.compose.runtime.Composable
+    private fun AppNavigation(vm: MainViewModel) {
+        val leaveClassroom = {
+            vm.stopBle()
+            vm.goToDashboard()
+        }
+
+        // System back mirrors the toolbar back buttons; on the start screen and dashboards it exits the app.
+        when (val screen = vm.currentScreen) {
+            is Screen.StudentLogin, is Screen.TeacherLogin -> BackHandler { vm.navigate(Screen.RoleSelection) }
+            is Screen.StudentRegister -> BackHandler { vm.navigate(Screen.StudentLogin) }
+            is Screen.TeacherRegister -> BackHandler { vm.navigate(Screen.TeacherLogin) }
+            is Screen.CreateClassroom, is Screen.JoinClassroom -> BackHandler { vm.goToDashboard() }
+            is Screen.ClassroomDetails -> BackHandler { leaveClassroom() }
+            is Screen.AttendanceSessionConfig -> BackHandler { vm.navigate(Screen.ClassroomDetails(screen.classroom)) }
+            is Screen.AttendanceRecords -> BackHandler { vm.navigate(Screen.ClassroomDetails(screen.classroom)) }
+            else -> Unit
+        }
+
+        when (val screen = vm.currentScreen) {
+            is Screen.RoleSelection -> HomeScreen(
+                onTeacherModeClick = { vm.navigate(Screen.TeacherLogin) },
+                onStudentModeClick = { vm.navigate(Screen.StudentLogin) }
+            )
+            is Screen.StudentLogin -> LoginScreen(
+                role = "STUDENT",
+                onLoginSuccess = { vm.navigate(Screen.StudentDashboard) },
+                onNavigateToRegister = { vm.navigate(Screen.StudentRegister) },
+                onBack = { vm.navigate(Screen.RoleSelection) }
+            )
+            is Screen.TeacherLogin -> LoginScreen(
+                role = "TEACHER",
+                onLoginSuccess = { vm.navigate(Screen.TeacherDashboard) },
+                onNavigateToRegister = { vm.navigate(Screen.TeacherRegister) },
+                onBack = { vm.navigate(Screen.RoleSelection) }
+            )
+            is Screen.StudentRegister -> RegisterScreen(
+                role = "STUDENT",
+                onRegisterSuccess = { vm.navigate(Screen.StudentDashboard) },
+                onBack = { vm.navigate(Screen.StudentLogin) }
+            )
+            is Screen.TeacherRegister -> RegisterScreen(
+                role = "TEACHER",
+                onRegisterSuccess = { vm.navigate(Screen.TeacherDashboard) },
+                onBack = { vm.navigate(Screen.TeacherLogin) }
+            )
+            is Screen.TeacherDashboard -> TeacherDashboard(
+                onClassroomClick = { vm.openClassroom(it) },
+                onCreateClassroom = { vm.navigate(Screen.CreateClassroom) },
+                onLogout = { vm.logout() }
+            )
+            is Screen.StudentDashboard -> StudentDashboard(
+                onClassroomClick = { vm.openClassroom(it) },
+                onJoinClassroom = { vm.navigate(Screen.JoinClassroom) },
+                onLogout = { vm.logout() }
+            )
+            is Screen.CreateClassroom -> CreateClassroomScreen(
+                onClassroomCreated = { vm.navigate(Screen.TeacherDashboard) },
+                onBack = { vm.navigate(Screen.TeacherDashboard) }
+            )
+            is Screen.JoinClassroom -> JoinClassroomScreen(
+                onJoined = { vm.navigate(Screen.StudentDashboard) },
+                onBack = { vm.navigate(Screen.StudentDashboard) }
+            )
+            is Screen.ClassroomDetails -> ClassroomDetailsScreen(
+                classroom = screen.classroom,
+                bleAdvertiser = vm.bleAdvertiser,
+                bleScanner = vm.bleScanner,
+                ensureBlePermissions = { ensureBlePermissions() },
+                onStartSessionClick = { vm.navigate(Screen.AttendanceSessionConfig(screen.classroom)) },
+                onSessionClick = { sessionId -> vm.navigate(Screen.AttendanceRecords(sessionId, screen.classroom)) },
+                onBack = leaveClassroom
+            )
+            is Screen.AttendanceSessionConfig -> AttendanceSessionConfigScreen(
+                classroom = screen.classroom,
+                onSessionCreated = { session ->
+                    if (ensureBlePermissions()) {
+                        vm.bleAdvertiser.startSessionBeacon(session)
+                    }
+                    vm.navigate(Screen.ClassroomDetails(screen.classroom))
+                },
+                onBack = { vm.navigate(Screen.ClassroomDetails(screen.classroom)) }
+            )
+            is Screen.AttendanceRecords -> AttendanceRecordsScreen(
+                sessionId = screen.sessionId,
+                classroom = screen.classroom,
+                onBack = { vm.navigate(Screen.ClassroomDetails(screen.classroom)) }
+            )
         }
     }
 }

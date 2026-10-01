@@ -13,23 +13,23 @@ import com.example.ble_attendance_backend.entity.Classroom;
 import com.example.ble_attendance_backend.entity.Role;
 import com.example.ble_attendance_backend.entity.User;
 import com.example.ble_attendance_backend.exception.BadRequestException;
+import com.example.ble_attendance_backend.exception.ForbiddenException;
 import com.example.ble_attendance_backend.exception.ResourceNotFoundException;
 import com.example.ble_attendance_backend.repository.AttendanceRecordRepository;
 import com.example.ble_attendance_backend.repository.AttendanceSessionRepository;
 import com.example.ble_attendance_backend.repository.ClassroomMembershipRepository;
 import com.example.ble_attendance_backend.repository.ClassroomRepository;
 import com.example.ble_attendance_backend.repository.UserRepository;
-import java.util.List;
-import java.time.LocalDateTime;
+import com.example.ble_attendance_backend.security.AuthenticatedUser;
+import java.time.DateTimeException;
+import java.time.Instant;
 import java.time.ZoneId;
-import java.time.ZonedDateTime;
+import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class AttendanceService {
-    private static final String DUMMY_VERIFICATION = "DUMMY_FACE_VERIFIED";
-    private static final ZoneId APPLICATION_ZONE = ZoneId.of("Asia/Kolkata");
     private final AttendanceSessionRepository sessionRepository;
     private final AttendanceRecordRepository recordRepository;
     private final ClassroomRepository classroomRepository;
@@ -47,65 +47,69 @@ public class AttendanceService {
     }
 
     @Transactional
-    public AttendanceSessionResponse createSession(AttendanceSessionRequest request) {
+    public AttendanceSessionResponse createSession(AuthenticatedUser caller, AttendanceSessionRequest request) {
         if (!request.startTime().isBefore(request.endTime())) {
             throw new BadRequestException("startTime must be before endTime");
         }
-        Classroom classroom = requireClassroom(request.classId());
-        if (classroom.getTeacher().getRole() != Role.TEACHER) {
-            throw new BadRequestException("Classroom owner must be a teacher");
+        ZoneId zone;
+        try {
+            zone = ZoneId.of(request.zoneId());
+        } catch (DateTimeException exception) {
+            throw new BadRequestException("zoneId is not a valid time zone");
         }
-        AttendanceSession session = sessionRepository.save(new AttendanceSession(classroom, request.date(), request.startTime(), request.endTime()));
-        membershipRepository.findByClassroomId(classroom.getId()).stream()
-            .filter(membership -> !recordRepository.existsBySessionIdAndStudentId(session.getId(), membership.getStudent().getId()))
+        Classroom classroom = requireOwnedClassroom(caller, request.classId());
+        AttendanceSession session = sessionRepository.save(new AttendanceSession(
+                classroom, request.date(), request.startTime(), request.endTime(), zone, BeaconCodes.newSecret()));
+        recordRepository.saveAll(membershipRepository.findByClassroomId(classroom.getId()).stream()
                 .map(membership -> new AttendanceRecord(session, membership.getStudent()))
-                .forEach(recordRepository::save);
+                .toList());
         return AttendanceSessionResponse.from(session);
     }
 
     @Transactional(readOnly = true)
-    public List<AttendanceSessionResponse> getClassroomSessions(Long classId) {
-        requireClassroom(classId);
+    public List<AttendanceSessionResponse> getClassroomSessions(AuthenticatedUser caller, Long classId) {
+        requireOwnedClassroom(caller, classId);
         return sessionRepository.findByClassroomIdOrderByDateDescStartTimeDesc(classId).stream().map(AttendanceSessionResponse::from).toList();
     }
 
     @Transactional(readOnly = true)
-    public List<AttendanceRecordResponse> getRecords(Long sessionId) {
-        requireSession(sessionId);
+    public List<AttendanceRecordResponse> getRecords(AuthenticatedUser caller, Long sessionId) {
+        requireOwnedSession(caller, sessionId);
         return recordRepository.findBySessionIdOrderByStudentId(sessionId).stream().map(AttendanceRecordResponse::from).toList();
     }
 
     @Transactional
-    public AttendanceRecordResponse updateRecord(Long sessionId, Long studentId, UpdateAttendanceRequest request) {
-        AttendanceRecord record = recordRepository.findBySessionIdAndStudentId(sessionId, studentId)
-                .orElseThrow(() -> new ResourceNotFoundException("Attendance record not found"));
+    public AttendanceRecordResponse updateRecord(AuthenticatedUser caller, Long sessionId, Long studentId, UpdateAttendanceRequest request) {
+        requireOwnedSession(caller, sessionId);
         if (request.status() == AttendanceStatus.LATE) {
             throw new BadRequestException("status must be PRESENT or ABSENT");
         }
+        AttendanceRecord record = recordRepository.findBySessionIdAndStudentId(sessionId, studentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Attendance record not found"));
         record.setStatus(request.status());
         return AttendanceRecordResponse.from(recordRepository.save(record));
     }
 
     @Transactional
-    public AttendanceRecordResponse markPresent(Long sessionId, Long studentId, MarkAttendanceRequest request) {
-        if (!DUMMY_VERIFICATION.equals(request.verification())) {
-            throw new BadRequestException("Unsupported attendance verification");
+    public AttendanceRecordResponse markPresent(AuthenticatedUser caller, Long sessionId, MarkAttendanceRequest request) {
+        if (caller.role() != Role.STUDENT) {
+            throw new ForbiddenException("Only a STUDENT can mark attendance");
         }
         AttendanceSession session = requireSession(sessionId);
-        User student = userRepository.findById(studentId)
-                .orElseThrow(() -> new ResourceNotFoundException("Student not found: " + studentId));
-        if (student.getRole() != Role.STUDENT) {
-            throw new BadRequestException("User must have role STUDENT");
+        if (!membershipRepository.existsByClassroomIdAndStudentId(session.getClassroom().getId(), caller.id())) {
+            throw new ForbiddenException("You are not a member of this classroom");
         }
-        if (!membershipRepository.existsByClassroomIdAndStudentId(session.getClassroom().getId(), studentId)) {
-            throw new ResourceNotFoundException("Student is not a member of this classroom");
-        }
-        if (!isSessionCurrentlyActive(session)) {
+        Instant now = Instant.now();
+        if (now.isBefore(session.getStartInstant()) || !now.isBefore(session.getEndInstant())) {
             throw new BadRequestException("Attendance session is not currently active");
         }
-        AttendanceRecord record = recordRepository.findBySessionIdAndStudentId(sessionId, studentId)
-                .orElseThrow(() -> new ResourceNotFoundException("Attendance record not found"));
-        if (record.getStatus() != AttendanceStatus.PRESENT) {
+        if (!BeaconCodes.verify(session.getBeaconSecret(), session.getId(), request.beaconCode(), now)) {
+            throw new BadRequestException("Beacon code is invalid or expired. Scan again near your teacher's device");
+        }
+        // Students who joined after the session was created have no record yet.
+        AttendanceRecord record = recordRepository.findBySessionIdAndStudentId(sessionId, caller.id())
+                .orElseGet(() -> new AttendanceRecord(session, userRepository.getReferenceById(caller.id())));
+        if (record.getId() == null || record.getStatus() != AttendanceStatus.PRESENT) {
             record.setStatus(AttendanceStatus.PRESENT);
             record = recordRepository.save(record);
         }
@@ -113,29 +117,44 @@ public class AttendanceService {
     }
 
     @Transactional(readOnly = true)
-    public List<AttendanceHistoryResponse> getStudentHistory(Long classId, Long studentId) {
-        if (!userRepository.existsById(studentId)) {
-            throw new ResourceNotFoundException("Student not found: " + studentId);
+    public List<AttendanceHistoryResponse> getMyHistory(AuthenticatedUser caller, Long classId) {
+        if (caller.role() != Role.STUDENT) {
+            throw new ForbiddenException("Only a STUDENT has attendance history");
         }
-        if (!membershipRepository.existsByClassroomIdAndStudentId(classId, studentId)) {
-            throw new ResourceNotFoundException("Student is not a member of this classroom");
+        if (!membershipRepository.existsByClassroomIdAndStudentId(classId, caller.id())) {
+            throw new ForbiddenException("You are not a member of this classroom");
         }
-        return recordRepository.findBySessionClassroomIdAndStudentIdOrderBySessionDateDescSessionStartTimeDesc(classId, studentId).stream().map(AttendanceHistoryResponse::from).toList();
+        return recordRepository.findBySessionClassroomIdAndStudentIdOrderBySessionDateDescSessionStartTimeDesc(classId, caller.id())
+                .stream().map(AttendanceHistoryResponse::from).toList();
     }
 
-    private Classroom requireClassroom(Long classId) {
-        return classroomRepository.findById(classId).orElseThrow(() -> new ResourceNotFoundException("Classroom not found: " + classId));
+    /** Gives a newly joined student an ABSENT record in every session of the class that hasn't ended yet. */
+    @Transactional
+    public void addStudentToOpenSessions(Classroom classroom, User student) {
+        Instant now = Instant.now();
+        recordRepository.saveAll(sessionRepository.findByClassroomIdOrderByDateDescStartTimeDesc(classroom.getId()).stream()
+                .filter(session -> session.getEndInstant().isAfter(now))
+                .filter(session -> !recordRepository.existsBySessionIdAndStudentId(session.getId(), student.getId()))
+                .map(session -> new AttendanceRecord(session, student))
+                .toList());
+    }
+
+    private Classroom requireOwnedClassroom(AuthenticatedUser caller, Long classId) {
+        Classroom classroom = classroomRepository.findById(classId)
+                .orElseThrow(() -> new ResourceNotFoundException("Classroom not found: " + classId));
+        if (caller.role() != Role.TEACHER || !classroom.getTeacher().getId().equals(caller.id())) {
+            throw new ForbiddenException("Only the classroom's teacher can do this");
+        }
+        return classroom;
+    }
+
+    private AttendanceSession requireOwnedSession(AuthenticatedUser caller, Long sessionId) {
+        AttendanceSession session = requireSession(sessionId);
+        requireOwnedClassroom(caller, session.getClassroom().getId());
+        return session;
     }
 
     private AttendanceSession requireSession(Long sessionId) {
         return sessionRepository.findById(sessionId).orElseThrow(() -> new ResourceNotFoundException("Attendance session not found: " + sessionId));
-    }
-
-    private boolean isSessionCurrentlyActive(AttendanceSession session) {
-        ZonedDateTime now = ZonedDateTime.now(APPLICATION_ZONE);
-        LocalDateTime sessionStart = LocalDateTime.of(session.getDate(), session.getStartTime());
-        LocalDateTime sessionEnd = LocalDateTime.of(session.getDate(), session.getEndTime());
-        LocalDateTime current = now.toLocalDateTime();
-        return !current.isBefore(sessionStart) && current.isBefore(sessionEnd);
     }
 }

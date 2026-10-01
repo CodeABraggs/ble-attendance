@@ -82,10 +82,19 @@ fun RegisterScreen(
                             error = "Email and Password cannot be empty"
                             return@Button
                         }
+                        if (!android.util.Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches()) {
+                            error = "Enter a valid email address"
+                            return@Button
+                        }
+                        if (password.length !in 8..72) {
+                            error = "Password must be between 8 and 72 characters"
+                            return@Button
+                        }
                         loading = true
                         error = null
                         scope.launch {
                             try {
+                                // Registering also signs the user in.
                                 Repository.register(email, password, role)
                                 onRegisterSuccess()
                             } catch (e: Exception) {

@@ -1,6 +1,8 @@
 package com.example.ble_app.data
 
+import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import retrofit2.HttpException
@@ -14,14 +16,48 @@ object Repository {
     private val _classrooms = MutableStateFlow<List<Classroom>>(emptyList())
     val classrooms: StateFlow<List<Classroom>> = _classrooms
 
-    fun setCurrentUser(user: User?) {
+    private var sessionStore: SessionStore? = null
+
+    @Volatile
+    private var token: String? = null
+
+    /** Restores a saved login. Safe to call more than once. */
+    fun init(context: Context) {
+        if (sessionStore != null) return
+        val store = SessionStore(context.applicationContext)
+        sessionStore = store
+        store.load()?.let { saved ->
+            token = saved.token
+            _currentUser.value = saved.user
+        }
+    }
+
+    fun authToken(): String? = token
+
+    /** Called by the HTTP layer when the server rejects [rejectedToken] (expired or revoked). */
+    fun onUnauthorized(rejectedToken: String) {
+        if (token == rejectedToken) clearSession()
+    }
+
+    private fun startSession(response: LoginResponse): User {
+        val user = User(response.userId, response.email, response.role)
+        token = response.token
+        sessionStore?.save(StoredSession(response.token, user, response.expiresAtEpochMillis))
         _currentUser.value = user
+        return user
+    }
+
+    private fun clearSession() {
+        token = null
+        sessionStore?.clear()
+        _currentUser.value = null
+        _classrooms.value = emptyList()
     }
 
     fun parseError(e: Throwable): String {
         // Print the full stack trace to Logcat for debug visibility
         Log.e("RepositoryNetworkError", "Actual network exception: ${e.javaClass.simpleName} - ${e.message}", e)
-        
+
         return when (e) {
             is IOException -> "Cannot connect to server. Make sure Spring Boot is running. Details: ${e.localizedMessage}"
             is HttpException -> {
@@ -37,8 +73,10 @@ object Repository {
                 }
 
                 when (code) {
-                    404 -> serverMsg ?: "Account does not exist. Create an account first."
-                    400 -> serverMsg ?: "Invalid email or password."
+                    401 -> serverMsg ?: "Your session has expired. Please log in again."
+                    403 -> serverMsg ?: "You are not allowed to do that."
+                    404 -> serverMsg ?: "Not found."
+                    400 -> serverMsg ?: "Invalid request."
                     409 -> serverMsg ?: "An account with this email already exists."
                     else -> serverMsg ?: "Server error (${code}). Please try again."
                 }
@@ -47,119 +85,100 @@ object Repository {
         }
     }
 
-    suspend fun login(email: String, password: String): User {
+    // Converts failures into user-facing messages, but lets coroutine cancellation propagate.
+    private suspend fun <T> apiCall(block: suspend () -> T): T {
         try {
-            val user = NetworkConfig.apiService.login(LoginRequest(email, password))
-            _currentUser.value = user
-            return user
+            return block()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             throw Exception(parseError(e))
         }
     }
 
-    suspend fun register(email: String, password: String, role: String): User {
+    suspend fun login(email: String, password: String, role: String): User = apiCall {
+        startSession(NetworkConfig.apiService.login(LoginRequest(email.trim(), password, role)))
+    }
+
+    /** Registers and signs the new user in. */
+    suspend fun register(email: String, password: String, role: String): User = apiCall {
+        startSession(NetworkConfig.apiService.register(RegisterRequest(email.trim(), password, role)))
+    }
+
+    /** Checks the saved token with the server; a 401 signs the user out via the HTTP interceptor. */
+    suspend fun validateSession() {
+        if (token == null) return
         try {
-            return NetworkConfig.apiService.register(RegisterRequest(email, password, role))
+            NetworkConfig.apiService.me()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
-            throw Exception(parseError(e))
+            // Offline: keep the saved session until the server can be reached.
+            Log.w("Repository", "Could not validate saved session", e)
         }
     }
 
-    fun logout() {
-        _currentUser.value = null
-        _classrooms.value = emptyList()
+    suspend fun logout() {
+        val oldToken = token
+        clearSession()
+        if (oldToken != null) {
+            try {
+                NetworkConfig.apiService.logout("Bearer $oldToken")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Log.w("Repository", "Server logout failed; token will expire on its own", e)
+            }
+        }
     }
 
     suspend fun fetchClassrooms() {
-        val user = _currentUser.value ?: return
+        if (_currentUser.value == null) return
         try {
-            val list = if (user.role == "TEACHER") {
-                NetworkConfig.apiService.getTeacherClasses(user.userId)
-            } else {
-                NetworkConfig.apiService.getStudentClasses(user.userId)
-            }
-            _classrooms.value = list
+            _classrooms.value = NetworkConfig.apiService.getMyClassrooms()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             Log.e("Repository", "Failed to fetch classrooms", e)
         }
     }
 
-    suspend fun createClassroom(name: String): Classroom {
-        val user = _currentUser.value ?: throw Exception("Not logged in")
-        try {
-            val classroom = NetworkConfig.apiService.createClassroom(CreateClassRequest(user.userId, name))
-            fetchClassrooms()
-            return classroom
-        } catch (e: Throwable) {
-            throw Exception(parseError(e))
-        }
+    suspend fun createClassroom(name: String): Classroom = apiCall {
+        val classroom = NetworkConfig.apiService.createClassroom(CreateClassRequest(name))
+        fetchClassrooms()
+        classroom
     }
 
-    suspend fun getClassroomByCode(code: String): Classroom {
-        try {
-            return NetworkConfig.apiService.getClassroomByCode(code)
-        } catch (e: Throwable) {
-            throw Exception(parseError(e))
-        }
+    suspend fun getClassroomByCode(code: String): Classroom = apiCall {
+        NetworkConfig.apiService.getClassroomByCode(code)
     }
 
-    suspend fun joinClassroom(code: String) {
-        val user = _currentUser.value ?: throw Exception("Not logged in")
-        try {
-            NetworkConfig.apiService.joinClassroom(JoinClassRequest(user.userId, code))
-            fetchClassrooms()
-        } catch (e: Throwable) {
-            throw Exception(parseError(e))
-        }
+    suspend fun joinClassroom(code: String) = apiCall {
+        NetworkConfig.apiService.joinClassroom(JoinClassRequest(code))
+        fetchClassrooms()
     }
 
-    suspend fun createAttendanceSession(classId: Int, date: String, startTime: String, endTime: String): AttendanceSession {
-        try {
-            return NetworkConfig.apiService.createAttendanceSession(CreateSessionRequest(classId, date, startTime, endTime))
-        } catch (e: Throwable) {
-            throw Exception(parseError(e))
-        }
+    suspend fun createAttendanceSession(classId: Int, date: String, startTime: String, endTime: String, zoneId: String): AttendanceSession = apiCall {
+        NetworkConfig.apiService.createAttendanceSession(CreateSessionRequest(classId, date, startTime, endTime, zoneId))
     }
 
-    suspend fun getSessionsForClassroom(classId: Int): List<AttendanceSession> {
-        try {
-            return NetworkConfig.apiService.getSessionsForClassroom(classId)
-        } catch (e: Throwable) {
-            throw Exception(parseError(e))
-        }
+    suspend fun getSessionsForClassroom(classId: Int): List<AttendanceSession> = apiCall {
+        NetworkConfig.apiService.getSessionsForClassroom(classId)
     }
 
-    suspend fun getAttendanceRecords(sessionId: Int): List<AttendanceRecord> {
-        try {
-            return NetworkConfig.apiService.getAttendanceRecords(sessionId)
-        } catch (e: Throwable) {
-            throw Exception(parseError(e))
-        }
+    suspend fun getAttendanceRecords(sessionId: Int): List<AttendanceRecord> = apiCall {
+        NetworkConfig.apiService.getAttendanceRecords(sessionId)
     }
 
-    suspend fun updateAttendanceManually(sessionId: Int, studentId: Int, status: String) {
-        try {
-            NetworkConfig.apiService.updateAttendanceManually(sessionId, studentId, UpdateAttendanceRequest(status))
-        } catch (e: Throwable) {
-            throw Exception(parseError(e))
-        }
+    suspend fun updateAttendanceManually(sessionId: Int, studentId: Int, status: String) = apiCall {
+        NetworkConfig.apiService.updateAttendanceManually(sessionId, studentId, UpdateAttendanceRequest(status))
     }
 
-    suspend fun getStudentAttendanceHistory(classId: Int): List<StudentAttendanceHistoryRecord> {
-        val user = _currentUser.value ?: return emptyList()
-        try {
-            return NetworkConfig.apiService.getStudentAttendanceHistory(classId, user.userId)
-        } catch (e: Throwable) {
-            throw Exception(parseError(e))
-        }
+    suspend fun getStudentAttendanceHistory(classId: Int): List<StudentAttendanceHistoryRecord> = apiCall {
+        NetworkConfig.apiService.getMyAttendanceHistory(classId)
     }
 
-    suspend fun markAttendance(sessionId: Int) {
-        val user = _currentUser.value ?: throw Exception("Not logged in")
-        try {
-            NetworkConfig.apiService.markAttendance(sessionId, user.userId, MarkAttendanceRequest())
-        } catch (e: Throwable) {
-            throw Exception(parseError(e))
-        }
+    suspend fun markAttendance(sessionId: Int, beaconCode: Int) = apiCall {
+        NetworkConfig.apiService.markAttendance(sessionId, MarkAttendanceRequest(beaconCode))
     }
 }

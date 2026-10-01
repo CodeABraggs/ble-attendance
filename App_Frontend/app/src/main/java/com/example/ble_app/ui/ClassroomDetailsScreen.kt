@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -16,21 +17,17 @@ import com.example.ble_app.bluetooth.BleAdvertiser
 import com.example.ble_app.bluetooth.BleScanner
 import com.example.ble_app.data.AttendanceSession
 import com.example.ble_app.data.Classroom
-import com.example.ble_app.data.NetworkConfig
 import com.example.ble_app.data.Repository
 import com.example.ble_app.data.StudentAttendanceHistoryRecord
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ClassroomDetailsScreen(
     classroom: Classroom,
-    initialActiveSessionId: Int? = null,
     bleAdvertiser: BleAdvertiser,
     bleScanner: BleScanner,
+    ensureBlePermissions: () -> Boolean,
     onStartSessionClick: () -> Unit,
     onSessionClick: (Int) -> Unit,
     onBack: () -> Unit
@@ -40,19 +37,20 @@ fun ClassroomDetailsScreen(
 
     // BLE States
     val isAdvertising by bleAdvertiser.isAdvertising.collectAsState()
-    val isScanning by bleScanner.isScanning.collectAsState()
-    val detected by bleScanner.detectedAttendance.collectAsState()
-    val detectedSessionId by bleScanner.detectedSessionId.collectAsState()
-    val debugInfo by bleScanner.debugInfo.collectAsState()
+    val activeSessionId by bleAdvertiser.activeSessionId.collectAsState()
     val errorMsg by bleAdvertiser.errorMessage.collectAsState()
+    val isScanning by bleScanner.isScanning.collectAsState()
+    val detectedBeacon by bleScanner.detectedBeacon.collectAsState()
+    val debugInfo by bleScanner.debugInfo.collectAsState()
 
     // Backend session/history data lists
     var sessions by remember { mutableStateOf<List<AttendanceSession>>(emptyList()) }
     var studentHistory by remember { mutableStateOf<List<StudentAttendanceHistoryRecord>>(emptyList()) }
     var loadingData by remember { mutableStateOf(false) }
-    var studentStatusMessage by remember { mutableStateOf("Click the button to scan for the classroom session.") }
-    var attendanceMarkedSuccess by remember { mutableStateOf(false) }
-    
+    var studentStatusMessage by rememberSaveable { mutableStateOf("Click the button to scan for the classroom session.") }
+    var attendanceMarkedSuccess by rememberSaveable { mutableStateOf(false) }
+    var permissionMessage by remember { mutableStateOf<String?>(null) }
+
     val scope = rememberCoroutineScope()
 
     fun refreshData() {
@@ -72,60 +70,34 @@ fun ClassroomDetailsScreen(
         }
     }
 
+    fun withBlePermissions(action: () -> Unit) {
+        if (ensureBlePermissions()) {
+            permissionMessage = null
+            action()
+        } else {
+            permissionMessage = "Allow the Bluetooth permissions, then try again."
+        }
+    }
+
     LaunchedEffect(Unit) {
         refreshData()
-        
-        // Auto-start advertiser if teacher just configured a new session
-        if (isTeacher && initialActiveSessionId != null) {
-            val payload = "${NetworkConfig.BLE_PAYLOAD_PREFIX}$initialActiveSessionId"
-            bleAdvertiser.startAdvertising(NetworkConfig.ATTENDANCE_SERVICE_UUID, payload)
-        }
     }
 
-    // Monitor for student BLE scanner target matching
-    LaunchedEffect(detected, detectedSessionId) {
-        if (!isTeacher && detected && detectedSessionId != null) {
-            val targetSessionId = detectedSessionId!!
-            bleScanner.stopScanning()
-            studentStatusMessage = "Teacher beacon detected. Verifying attendance..."
-            
-            // Dummy face-verification delay layer
-            delay(1500)
-            
-            try {
-                Repository.markAttendance(targetSessionId)
-                studentStatusMessage = "Attendance marked successfully."
-                attendanceMarkedSuccess = true
-                refreshData()
-            } catch (e: Exception) {
-                studentStatusMessage = e.message ?: "Failed to mark attendance on the server."
-            }
+    // Student: the scanner only reports beacons for this classroom; send the code to the server.
+    LaunchedEffect(detectedBeacon) {
+        val beacon = detectedBeacon ?: return@LaunchedEffect
+        if (isTeacher) return@LaunchedEffect
+        bleScanner.stopScanning()
+        studentStatusMessage = "Teacher beacon detected. Verifying attendance..."
+        try {
+            Repository.markAttendance(beacon.sessionId, beacon.code)
+            studentStatusMessage = "Attendance marked successfully."
+            attendanceMarkedSuccess = true
+            refreshData()
+        } catch (e: Exception) {
+            studentStatusMessage = e.message ?: "Failed to mark attendance on the server."
         }
-    }
-
-    // Coroutine to automatically stop teacher BLE advertiser at session end time
-    LaunchedEffect(isAdvertising, sessions, initialActiveSessionId) {
-        if (isTeacher && isAdvertising) {
-            val currentActiveId = initialActiveSessionId ?: sessions.firstOrNull()?.sessionId
-            val activeSession = sessions.find { it.sessionId == currentActiveId } ?: sessions.firstOrNull()
-            if (activeSession != null) {
-                scope.launch {
-                    while (bleAdvertiser.isAdvertising.value) {
-                        try {
-                            val sdf = SimpleDateFormat("HH:mm", Locale.US)
-                            val nowStr = sdf.format(Date())
-                            if (nowStr >= activeSession.endTime) {
-                                bleAdvertiser.stopAdvertising()
-                                break
-                            }
-                        } catch (e: Exception) {
-                            // ignore errors in time check
-                        }
-                        delay(30000) // check every 30 seconds
-                    }
-                }
-            }
-        }
+        bleScanner.consumeDetection()
     }
 
     Scaffold(
@@ -133,11 +105,7 @@ fun ClassroomDetailsScreen(
             TopAppBar(
                 title = { Text(classroom.name) },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        bleAdvertiser.stopAdvertising()
-                        bleScanner.stopScanning()
-                        onBack()
-                    }) {
+                    IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
@@ -156,15 +124,15 @@ fun ClassroomDetailsScreen(
                 Spacer(modifier = Modifier.height(4.dp))
                 Text("Classroom ID: ${classroom.classId}", style = MaterialTheme.typography.bodyMedium)
                 Spacer(modifier = Modifier.height(16.dp))
-                Divider()
+                HorizontalDivider()
             }
 
             if (isTeacher) {
                 item {
                     Text("Attendance Control", style = MaterialTheme.typography.titleLarge)
                     Spacer(modifier = Modifier.height(8.dp))
-                    
-                    if (isAdvertising) {
+
+                    if (activeSessionId != null) {
                         Button(
                             onClick = { bleAdvertiser.stopAdvertising() },
                             modifier = Modifier.fillMaxWidth(),
@@ -173,8 +141,12 @@ fun ClassroomDetailsScreen(
                             Text("STOP ADVERTISING BEACON")
                         }
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text("Session BLE Status: BROADCASTING ACTIVE", color = Color(0xFF2E7D32), style = MaterialTheme.typography.bodyMedium)
-                        Text("Payload: ${NetworkConfig.BLE_PAYLOAD_PREFIX}${initialActiveSessionId ?: sessions.firstOrNull()?.sessionId ?: ""}", style = MaterialTheme.typography.bodySmall)
+                        if (isAdvertising) {
+                            Text("Session BLE Status: BROADCASTING ACTIVE", color = Color(0xFF2E7D32), style = MaterialTheme.typography.bodyMedium)
+                        } else {
+                            Text("Session BLE Status: WAITING FOR SESSION START", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        Text("Session ID: $activeSessionId (code rotates every 30s)", style = MaterialTheme.typography.bodySmall)
                     } else {
                         Button(
                             onClick = onStartSessionClick,
@@ -185,8 +157,9 @@ fun ClassroomDetailsScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         Text("Session BLE Status: INACTIVE", style = MaterialTheme.typography.bodyMedium)
                     }
-                    
+
                     errorMsg?.let { Text(it, color = Color.Red) }
+                    permissionMessage?.let { Text(it, color = Color.Red) }
                 }
 
                 item {
@@ -208,6 +181,12 @@ fun ClassroomDetailsScreen(
                     }
                 } else {
                     items(sessions) { session ->
+                        val now = System.currentTimeMillis()
+                        val status = when {
+                            now < session.startEpochMillis -> "UPCOMING"
+                            now < session.endEpochMillis -> "LIVE"
+                            else -> "ENDED"
+                        }
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -216,7 +195,13 @@ fun ClassroomDetailsScreen(
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text("Date: ${session.date}", style = MaterialTheme.typography.titleMedium)
                                 Text("Time: ${session.startTime} - ${session.endTime}", style = MaterialTheme.typography.bodyMedium)
-                                Text("Session ID: ${session.sessionId} | Status: ${session.status ?: "INACTIVE"}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                                Text("Session ID: ${session.sessionId} | Status: $status", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                                // Lets the teacher resume broadcasting, e.g. after restarting the app.
+                                if (status != "ENDED" && activeSessionId != session.sessionId) {
+                                    TextButton(onClick = { withBlePermissions { bleAdvertiser.startSessionBeacon(session) } }) {
+                                        Text("BROADCAST THIS SESSION")
+                                    }
+                                }
                             }
                         }
                     }
@@ -237,10 +222,12 @@ fun ClassroomDetailsScreen(
                         }
                     } else {
                         Button(
-                            onClick = { 
-                                attendanceMarkedSuccess = false
-                                studentStatusMessage = "Searching for teacher's device..."
-                                bleScanner.startScanning(NetworkConfig.ATTENDANCE_SERVICE_UUID) 
+                            onClick = {
+                                withBlePermissions {
+                                    attendanceMarkedSuccess = false
+                                    studentStatusMessage = "Searching for teacher's device..."
+                                    bleScanner.startScanning(classroom.classId)
+                                }
                             },
                             modifier = Modifier.fillMaxWidth(),
                             enabled = !attendanceMarkedSuccess
@@ -248,6 +235,7 @@ fun ClassroomDetailsScreen(
                             Text("SCAN FOR ATTENDANCE")
                         }
                     }
+                    permissionMessage?.let { Text(it, color = Color.Red) }
 
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -267,7 +255,7 @@ fun ClassroomDetailsScreen(
                             }
                         }
                     }
-                    
+
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("Debug Info: $debugInfo", style = MaterialTheme.typography.bodySmall)
                 }

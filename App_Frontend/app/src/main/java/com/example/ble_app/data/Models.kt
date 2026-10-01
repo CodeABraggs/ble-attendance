@@ -20,12 +20,10 @@ data class Classroom(
 )
 
 data class JoinClassRequest(
-    val studentId: Int,
     val code: String
 )
 
 data class CreateClassRequest(
-    val teacherId: Int,
     val name: String
 )
 
@@ -35,7 +33,11 @@ data class AttendanceSession(
     val date: String,
     val startTime: String,
     val endTime: String,
-    val status: String? = "INACTIVE"
+    val zoneId: String,
+    val startEpochMillis: Long,
+    val endEpochMillis: Long,
+    // HMAC key for the rotating BLE beacon code; only sent to the classroom's teacher.
+    val beaconSecret: String
 )
 
 data class AttendanceRecord(

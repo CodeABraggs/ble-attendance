@@ -1,7 +1,8 @@
 package com.example.ble_attendance_backend.dto;
 
-import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 
+/** beaconCode is the rotating code the student's phone read from the teacher's BLE beacon. */
 public record MarkAttendanceRequest(
-        @NotBlank(message = "verification is required") String verification) {
+        @NotNull(message = "beaconCode is required") Integer beaconCode) {
 }

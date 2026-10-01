@@ -4,8 +4,6 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 public record CreateClassroomRequest(
-        @jakarta.validation.constraints.NotNull(message = "teacherId is required")
-        Long teacherId,
         @NotBlank(message = "classroom name is required")
         @Size(max = 150, message = "classroom name must be at most 150 characters")
         String name) {

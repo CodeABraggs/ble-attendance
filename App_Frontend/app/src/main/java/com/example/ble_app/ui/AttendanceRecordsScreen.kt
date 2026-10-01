@@ -30,6 +30,7 @@ fun AttendanceRecordsScreen(
 
     fun loadRecords() {
         loading = true
+        error = null
         scope.launch {
             try {
                 records = Repository.getAttendanceRecords(sessionId)
@@ -90,7 +91,9 @@ fun AttendanceRecordsScreen(
                                             try {
                                                 Repository.updateAttendanceManually(sessionId, record.studentId, "PRESENT")
                                                 loadRecords()
-                                            } catch (e: Exception) {}
+                                            } catch (e: Exception) {
+                                                error = e.message ?: "Failed to update attendance"
+                                            }
                                         }
                                     }) {
                                         Text("P", color = Color(0xFF2E7D32))
@@ -100,7 +103,9 @@ fun AttendanceRecordsScreen(
                                             try {
                                                 Repository.updateAttendanceManually(sessionId, record.studentId, "ABSENT")
                                                 loadRecords()
-                                            } catch (e: Exception) {}
+                                            } catch (e: Exception) {
+                                                error = e.message ?: "Failed to update attendance"
+                                            }
                                         }
                                     }) {
                                         Text("A", color = Color(0xFFC62828))

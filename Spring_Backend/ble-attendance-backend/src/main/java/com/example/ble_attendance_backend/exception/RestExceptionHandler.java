@@ -31,6 +31,16 @@ public class RestExceptionHandler {
         return response(HttpStatus.NOT_FOUND, exception.getMessage());
     }
 
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<ApiError> handleUnauthorized(UnauthorizedException exception) {
+        return response(HttpStatus.UNAUTHORIZED, exception.getMessage());
+    }
+
+    @ExceptionHandler(ForbiddenException.class)
+    public ResponseEntity<ApiError> handleForbidden(ForbiddenException exception) {
+        return response(HttpStatus.FORBIDDEN, exception.getMessage());
+    }
+
     @ExceptionHandler(ConflictException.class)
     public ResponseEntity<ApiError> handleConflict(ConflictException exception) {
         return response(HttpStatus.CONFLICT, exception.getMessage());

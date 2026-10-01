@@ -87,14 +87,9 @@ fun LoginScreen(
                         error = null
                         scope.launch {
                             try {
-                                val user = Repository.login(email, password)
-                                if (user.role != role) {
-                                    error = "This account is registered as a ${user.role}, not a $role."
-                                    Repository.logout()
-                                } else {
-                                    Repository.fetchClassrooms()
-                                    onLoginSuccess()
-                                }
+                                // The server rejects the login if the account has a different role.
+                                Repository.login(email, password, role)
+                                onLoginSuccess()
                             } catch (e: Exception) {
                                 error = e.message ?: "Login failed. Check server/credentials."
                             } finally {
