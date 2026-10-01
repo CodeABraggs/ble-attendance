@@ -5,9 +5,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.ble_app.data.Repository
+import com.example.ble_app.face.FaceModels
 import com.example.ble_app.face.LivenessAction
 import kotlinx.coroutines.launch
 
@@ -26,11 +28,15 @@ fun FaceEnrollmentScreen(
     // Enrollment is just "look at the camera"; the anti-spoofing model still checks for photos/screens.
     val actions = remember { emptyList<LivenessAction>() }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    LaunchedEffect(Unit) { FaceModels.preload(context) }
 
     if (capturing) {
         FaceCaptureScreen(
             title = "Set up face verification",
             actions = actions,
+            // More frames than attendance, for a steadier reference face.
+            samples = FaceModels.ENROLLMENT_SAMPLES,
             onCaptured = { face ->
                 capturing = false
                 submitting = true

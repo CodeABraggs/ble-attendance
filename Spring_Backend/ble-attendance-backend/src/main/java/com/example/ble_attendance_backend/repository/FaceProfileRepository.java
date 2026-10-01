@@ -7,5 +7,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface FaceProfileRepository extends JpaRepository<FaceProfile, Long> {
     Optional<FaceProfile> findByUserId(Long userId);
     boolean existsByUserId(Long userId);
+    boolean existsByUserIdAndModelVersion(Long userId, Integer modelVersion);
     void deleteByUserId(Long userId);
 }

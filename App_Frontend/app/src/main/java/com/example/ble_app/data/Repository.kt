@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import com.example.ble_app.face.CapturedFace
+import com.example.ble_app.face.FaceModels
 import com.example.ble_app.security.DeviceKey
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -13,6 +14,12 @@ import kotlinx.coroutines.flow.StateFlow
 import retrofit2.HttpException
 import org.json.JSONObject
 import java.io.IOException
+
+/** A failed API call; [httpCode] is null when the server couldn't be reached. */
+class ApiException(message: String, val httpCode: Int?) : Exception(message) {
+    /** The server rejected the face sample but the same challenge can be tried again. */
+    val isFaceRetry: Boolean get() = httpCode == 422
+}
 
 object Repository {
     private val _currentUser = MutableStateFlow<User?>(null)
@@ -126,7 +133,7 @@ object Repository {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            throw Exception(parseError(e))
+            throw ApiException(parseError(e), (e as? HttpException)?.code())
         }
     }
 
@@ -228,7 +235,8 @@ object Repository {
                     embedding = sample.embedding,
                     photo = sample.photo,
                     spoofScoreBp = face.spoofScoreBp,
-                    signature = DeviceKey.sign("ENROLL|${user.userId}|${sample.digest}")
+                    signature = DeviceKey.sign("ENROLL|${user.userId}|${sample.digest}"),
+                    modelVersion = FaceModels.MODEL_VERSION
                 )
             ).requireSuccess()
         }
@@ -240,7 +248,11 @@ object Repository {
         NetworkConfig.apiService.requestChallenge(sessionId, ChallengeRequest(beaconCode))
     }
 
-    /** Step 2: send the face sample captured for the challenge. Returns the resulting record status. */
+    /**
+     * Step 2: send the face sample captured for the challenge. Returns the resulting record status.
+     * Throws an [ApiException] with [ApiException.isFaceRetry] when the face didn't match but the same
+     * challenge may be tried again.
+     */
     suspend fun markAttendance(sessionId: Int, nonce: String, face: CapturedFace): AttendanceRecord {
         val sample = SignedSample(face)
         return apiCall {
@@ -251,7 +263,8 @@ object Repository {
                     embedding = sample.embedding,
                     photo = sample.photo,
                     spoofScoreBp = face.spoofScoreBp,
-                    signature = DeviceKey.sign("MARK|$sessionId|$nonce|${sample.digest}")
+                    signature = DeviceKey.sign("MARK|$sessionId|$nonce|${sample.digest}"),
+                    modelVersion = FaceModels.MODEL_VERSION
                 )
             )
         }

@@ -34,14 +34,45 @@ public class FaceProfile {
     @Column(nullable = false)
     private Instant enrolledAt;
 
+    // Version of the phone's face pipeline that produced the embeddings; null for pre-versioning profiles.
+    // Embeddings from different versions can't be compared, so an outdated profile must be re-enrolled.
+    private Integer modelVersion;
+
+    // Embeddings from recent confidently-matched attendance checks, newest first, concatenated.
+    // Matching against these as well adapts to the student's usual lighting and appearance.
+    @Column(length = 2304)
+    private byte[] recentEmbeddings;
+
     protected FaceProfile() {
     }
 
-    public FaceProfile(User user, byte[] embedding, byte[] referencePhoto) {
+    public FaceProfile(User user, byte[] embedding, byte[] referencePhoto, int modelVersion) {
         this.user = user;
         this.embedding = embedding;
         this.referencePhoto = referencePhoto;
         this.enrolledAt = Instant.now();
+        this.modelVersion = modelVersion;
+    }
+
+    /** Replaces an outdated enrollment in place (the user_id column is unique, so no delete + insert). */
+    public void reenroll(byte[] embedding, byte[] referencePhoto, int modelVersion) {
+        this.embedding = embedding;
+        this.referencePhoto = referencePhoto;
+        this.enrolledAt = Instant.now();
+        this.modelVersion = modelVersion;
+        this.recentEmbeddings = null;
+    }
+
+    /** Keeps [newEmbedding] plus the newest earlier ones, at most [maxRecent] in total. */
+    public void addRecentEmbedding(byte[] newEmbedding, int maxRecent) {
+        int keptOld = recentEmbeddings == null ? 0
+                : Math.min(recentEmbeddings.length, (maxRecent - 1) * newEmbedding.length);
+        byte[] combined = new byte[newEmbedding.length + keptOld];
+        System.arraycopy(newEmbedding, 0, combined, 0, newEmbedding.length);
+        if (keptOld > 0) {
+            System.arraycopy(recentEmbeddings, 0, combined, newEmbedding.length, keptOld);
+        }
+        this.recentEmbeddings = combined;
     }
 
     public Long getId() { return id; }
@@ -49,4 +80,6 @@ public class FaceProfile {
     public byte[] getEmbedding() { return embedding; }
     public byte[] getReferencePhoto() { return referencePhoto; }
     public Instant getEnrolledAt() { return enrolledAt; }
+    public Integer getModelVersion() { return modelVersion; }
+    public byte[] getRecentEmbeddings() { return recentEmbeddings; }
 }

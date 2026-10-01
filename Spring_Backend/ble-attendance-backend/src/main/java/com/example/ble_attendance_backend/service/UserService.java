@@ -42,7 +42,7 @@ public class UserService {
         if (request.role() != null && request.role() != user.getRole()) {
             throw new BadRequestException("This account is registered as a " + user.getRole() + ", not a " + request.role());
         }
-        return LoginResponse.from(user, tokenService.issue(user), faceProfileRepository.existsByUserId(user.getId()));
+        return LoginResponse.from(user, tokenService.issue(user), isFaceEnrolled(user.getId()));
     }
 
     @Transactional
@@ -59,7 +59,12 @@ public class UserService {
     public MeResponse me(AuthenticatedUser caller) {
         User user = requireUser(caller.id());
         return new MeResponse(user.getId(), user.getEmail(), user.getRole(),
-                faceProfileRepository.existsByUserId(user.getId()), user.getDevicePublicKey() != null);
+                isFaceEnrolled(user.getId()), user.getDevicePublicKey() != null);
+    }
+
+    // A profile from an older face pipeline doesn't count; the app then asks the student to enroll again.
+    private boolean isFaceEnrolled(Long userId) {
+        return faceProfileRepository.existsByUserIdAndModelVersion(userId, FaceService.MODEL_VERSION);
     }
 
     @Transactional(readOnly = true)

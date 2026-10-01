@@ -18,6 +18,7 @@ import com.example.ble_attendance_backend.entity.Role;
 import com.example.ble_attendance_backend.entity.User;
 import com.example.ble_attendance_backend.exception.BadRequestException;
 import com.example.ble_attendance_backend.exception.ConflictException;
+import com.example.ble_attendance_backend.exception.FaceRejectedException;
 import com.example.ble_attendance_backend.exception.ForbiddenException;
 import com.example.ble_attendance_backend.exception.ResourceNotFoundException;
 import com.example.ble_attendance_backend.repository.AttendanceChallengeRepository;
@@ -50,6 +51,8 @@ public class AttendanceService {
     /** Actions the phone checks with ML Kit; the app's LivenessAction enum uses the same names. */
     static final List<String> LIVENESS_ACTIONS = List.of("BLINK", "TURN_LEFT", "TURN_RIGHT", "SMILE");
     private static final Duration CHALLENGE_LIFETIME = Duration.ofMinutes(2);
+    // Face samples a student may submit per beacon scan before having to scan again.
+    private static final int FACE_ATTEMPTS_PER_CHALLENGE = 3;
 
     private final SecureRandom random = new SecureRandom();
     private final AttendanceSessionRepository sessionRepository;
@@ -159,11 +162,11 @@ public class AttendanceService {
     }
 
     /**
-     * Step 2: the phone submits the face sample captured while completing the challenge, signed with the
-     * account's linked device key. A clear match is PRESENT; a borderline one waits for teacher review.
-     * The challenge is consumed even when the face is rejected, so every attempt needs a fresh liveness check.
+     * Step 2: the phone submits the face sample captured for the challenge, signed with the account's linked
+     * device key. A clear match is PRESENT; a borderline one waits for teacher review. A clear mismatch gets
+     * a 422 so the app can take another sample right away, up to FACE_ATTEMPTS_PER_CHALLENGE per beacon scan.
      */
-    @Transactional(noRollbackFor = BadRequestException.class)
+    @Transactional(noRollbackFor = {BadRequestException.class, FaceRejectedException.class})
     public AttendanceRecordResponse markPresent(AuthenticatedUser caller, Long sessionId, MarkAttendanceRequest request) {
         if (caller.role() != Role.STUDENT) {
             throw new ForbiddenException("Only a STUDENT can mark attendance");
@@ -172,7 +175,6 @@ public class AttendanceService {
                 .filter(candidate -> candidate.getSessionId().equals(sessionId) && candidate.getStudentId().equals(caller.id()))
                 .filter(candidate -> !candidate.isUsed() && candidate.getExpiresAt().isAfter(Instant.now()))
                 .orElseThrow(() -> new BadRequestException("Verification expired. Scan for the beacon again"));
-        challenge.markUsed();
 
         AttendanceSession session = requireSession(sessionId);
         User student = userRepository.findById(caller.id())
@@ -183,8 +185,15 @@ public class AttendanceService {
 
         Evaluation evaluation = faceService.evaluate(student.getId(), sample);
         if (evaluation.decision() == FaceService.Decision.REJECT) {
-            throw new BadRequestException(evaluation.reason());
+            challenge.recordFailedAttempt();
+            int remaining = FACE_ATTEMPTS_PER_CHALLENGE - challenge.getFailedAttempts();
+            if (remaining > 0) {
+                throw new FaceRejectedException(evaluation.reason() + " (" + remaining + (remaining == 1 ? " try" : " tries") + " left)");
+            }
+            challenge.markUsed();
+            throw new BadRequestException(evaluation.reason() + ". Scan for the beacon to try again");
         }
+        challenge.markUsed();
 
         // Students who joined after the session was created have no record yet.
         AttendanceRecord record = recordRepository.findBySessionIdAndStudentId(sessionId, student.getId())
@@ -199,6 +208,9 @@ public class AttendanceService {
                 .orElseGet(() -> new AttendanceVerification(savedRecord));
         verification.update(evaluation.similarity(), evaluation.spoofScore(), sample.photo(), evaluation.reason());
         verificationRepository.save(verification);
+        if (evaluation.decision() == FaceService.Decision.ACCEPT) {
+            faceService.rememberConfidentSample(student.getId(), sample, evaluation.similarity());
+        }
         return AttendanceRecordResponse.from(savedRecord, true);
     }
 

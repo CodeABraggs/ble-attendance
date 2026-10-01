@@ -33,6 +33,10 @@ public class AttendanceChallenge {
     @Column(nullable = false)
     private boolean used;
 
+    // Face samples rejected so far; a few retries are allowed before the beacon must be scanned again.
+    @Column(nullable = false)
+    private int failedAttempts;
+
     protected AttendanceChallenge() {
     }
 
@@ -51,4 +55,6 @@ public class AttendanceChallenge {
     public Instant getExpiresAt() { return expiresAt; }
     public boolean isUsed() { return used; }
     public void markUsed() { this.used = true; }
+    public int getFailedAttempts() { return failedAttempts; }
+    public void recordFailedAttempt() { this.failedAttempts++; }
 }

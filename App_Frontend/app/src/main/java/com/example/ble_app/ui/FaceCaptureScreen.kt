@@ -2,6 +2,7 @@ package com.example.ble_app.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.util.Size
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -12,7 +13,6 @@ import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import android.util.Size
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
@@ -33,15 +33,20 @@ import com.example.ble_app.face.LivenessAction
 import java.util.concurrent.Executors
 
 /**
- * Full-screen front-camera liveness check. Calls [onCaptured] with the face sample once the person has
- * completed [actions]; nothing leaves the phone until the caller sends the result to the server.
+ * Full-screen front-camera face capture. Calls [onCaptured] with the face sample once [samples] good frames
+ * (and any [actions]) are done; nothing leaves the phone until the caller sends the result to the server.
+ * Changing [restartToken] takes a new sample on the running camera, showing [hint] (e.g. why the server
+ * asked for another try).
  */
 @Composable
 fun FaceCaptureScreen(
     title: String,
     actions: List<LivenessAction>,
+    samples: Int,
     onCaptured: (CapturedFace) -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    hint: String? = null,
+    restartToken: Int = 0
 ) {
     val context = LocalContext.current
     var hasCameraPermission by remember {
@@ -55,9 +60,6 @@ fun FaceCaptureScreen(
     }
     BackHandler(onBack = onCancel)
 
-    // A new attempt (fresh analyzer and random state) each time the user retries.
-    var attempt by remember { mutableIntStateOf(0) }
-
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -69,9 +71,7 @@ fun FaceCaptureScreen(
             Spacer(modifier = Modifier.height(16.dp))
             Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) { Text("Allow camera") }
         } else {
-            key(attempt) {
-                CameraLivenessCheck(actions, onCaptured, onRetry = { attempt++ })
-            }
+            CameraFaceCapture(actions, samples, hint, restartToken, onCaptured)
         }
         Spacer(modifier = Modifier.height(16.dp))
         TextButton(onClick = onCancel) { Text("Cancel") }
@@ -79,17 +79,25 @@ fun FaceCaptureScreen(
 }
 
 @Composable
-private fun CameraLivenessCheck(
+private fun CameraFaceCapture(
     actions: List<LivenessAction>,
-    onCaptured: (CapturedFace) -> Unit,
-    onRetry: () -> Unit
+    samples: Int,
+    hint: String?,
+    restartToken: Int,
+    onCaptured: (CapturedFace) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val analyzer = remember { FaceCaptureAnalyzer(context, actions) }
+    val analyzer = remember { FaceCaptureAnalyzer(context, actions, samples) }
     val executor = remember { Executors.newSingleThreadExecutor() }
     val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER } }
     val state by analyzer.state.collectAsState()
+
+    // Retries reuse the open camera, so they skip the camera start-up and exposure warm-up.
+    val initialRestartToken = remember { restartToken }
+    LaunchedEffect(restartToken) {
+        if (restartToken != initialRestartToken) analyzer.restart()
+    }
 
     DisposableEffect(lifecycleOwner) {
         val providerFuture = ProcessCameraProvider.getInstance(context)
@@ -132,12 +140,14 @@ private fun CameraLivenessCheck(
             modifier = Modifier.size(260.dp).clip(CircleShape)
         )
         Spacer(modifier = Modifier.height(16.dp))
+        hint?.let {
+            Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+            Spacer(modifier = Modifier.height(8.dp))
+        }
         when (val current = state) {
             is FaceCaptureState.Instruct -> {
-                // Two captures are automatic; only show steps when there are actions to perform.
-                if (current.totalSteps > 2) {
-                    Text("Step ${current.step} of ${current.totalSteps}", style = MaterialTheme.typography.bodySmall)
-                }
+                LinearProgressIndicator(progress = { current.progress }, modifier = Modifier.width(200.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(current.message, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
             }
             FaceCaptureState.Processing, is FaceCaptureState.Done -> {
@@ -147,7 +157,7 @@ private fun CameraLivenessCheck(
             is FaceCaptureState.Failed -> {
                 Text(current.message, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
                 Spacer(modifier = Modifier.height(8.dp))
-                Button(onClick = onRetry) { Text("Try again") }
+                Button(onClick = { analyzer.restart() }) { Text("Try again") }
             }
         }
     }

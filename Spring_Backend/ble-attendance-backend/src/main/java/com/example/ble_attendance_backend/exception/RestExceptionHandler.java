@@ -50,6 +50,12 @@ public class RestExceptionHandler {
         return response(HttpStatus.FORBIDDEN, exception.getMessage());
     }
 
+    // 422 tells the app to take another face sample for the same challenge instead of rescanning.
+    @ExceptionHandler(FaceRejectedException.class)
+    public ResponseEntity<ApiError> handleFaceRejected(FaceRejectedException exception) {
+        return response(HttpStatus.valueOf(422), exception.getMessage());
+    }
+
     @ExceptionHandler(ConflictException.class)
     public ResponseEntity<ApiError> handleConflict(ConflictException exception) {
         return response(HttpStatus.CONFLICT, exception.getMessage());

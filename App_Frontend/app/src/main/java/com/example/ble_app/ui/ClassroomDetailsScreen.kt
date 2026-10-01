@@ -12,14 +12,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.ble_app.bluetooth.BleAdvertiser
 import com.example.ble_app.bluetooth.BleScanner
 import com.example.ble_app.data.AttendanceChallenge
+import com.example.ble_app.data.ApiException
 import com.example.ble_app.data.AttendanceSession
 import com.example.ble_app.data.Classroom
 import com.example.ble_app.data.Repository
 import com.example.ble_app.data.StudentAttendanceHistoryRecord
+import com.example.ble_app.face.FaceModels
 import com.example.ble_app.face.LivenessAction
 import kotlinx.coroutines.launch
 
@@ -54,6 +57,10 @@ fun ClassroomDetailsScreen(
     var permissionMessage by remember { mutableStateOf<String?>(null) }
     // Liveness challenge for the detected session; while set, the camera check replaces this screen.
     var pendingChallenge by remember { mutableStateOf<Pair<Int, AttendanceChallenge>?>(null) }
+    // Set when the server asks for another face sample on the same challenge.
+    var faceRetryHint by remember { mutableStateOf<String?>(null) }
+    var faceRetryToken by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
 
     val scope = rememberCoroutineScope()
 
@@ -87,6 +94,11 @@ fun ClassroomDetailsScreen(
         refreshData()
     }
 
+    // Load the face models while the student scans, so the camera check starts instantly.
+    LaunchedEffect(isTeacher) {
+        if (!isTeacher) FaceModels.preload(context)
+    }
+
     // Student step 1: the scanner only reports beacons for this classroom. Trade the beacon code for a
     // liveness challenge, which proves the phone is in the room; the face check then proves who holds it.
     LaunchedEffect(detectedBeacon) {
@@ -102,31 +114,44 @@ fun ClassroomDetailsScreen(
         bleScanner.consumeDetection()
     }
 
-    // Student step 2: complete the random actions on camera, then submit the signed face sample.
+    // Student step 2: look at the camera (plus any actions), then submit the signed face sample.
+    // If the face doesn't match clearly, the server allows a few more tries on the same challenge,
+    // so the camera simply takes another sample instead of making the student scan again.
     pendingChallenge?.let { (sessionId, challenge) ->
         FaceCaptureScreen(
             title = "Verify it's you",
             actions = LivenessAction.parse(challenge.actions),
+            samples = FaceModels.ATTENDANCE_SAMPLES,
+            hint = faceRetryHint,
+            restartToken = faceRetryToken,
             onCaptured = { face ->
-                pendingChallenge = null
-                studentStatusMessage = "Checking your face..."
                 scope.launch {
                     try {
                         val record = Repository.markAttendance(sessionId, challenge.nonce, face)
-                        if (record.status == "PENDING_REVIEW") {
-                            studentStatusMessage = "Your face match was not certain, so your teacher will review it."
+                        studentStatusMessage = if (record.status == "PENDING_REVIEW") {
+                            "Your face match was not certain, so your teacher will review it."
                         } else {
-                            studentStatusMessage = "Attendance marked successfully."
+                            "Attendance marked successfully."
                         }
                         attendanceMarkedSuccess = true
+                        pendingChallenge = null
+                        faceRetryHint = null
                         refreshData()
                     } catch (e: Exception) {
-                        studentStatusMessage = e.message ?: "Failed to mark attendance on the server."
+                        if ((e as? ApiException)?.isFaceRetry == true) {
+                            faceRetryHint = e.message
+                            faceRetryToken++
+                        } else {
+                            pendingChallenge = null
+                            faceRetryHint = null
+                            studentStatusMessage = e.message ?: "Failed to mark attendance on the server."
+                        }
                     }
                 }
             },
             onCancel = {
                 pendingChallenge = null
+                faceRetryHint = null
                 studentStatusMessage = "Verification cancelled. Scan again to retry."
             }
         )

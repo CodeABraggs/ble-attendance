@@ -130,7 +130,9 @@ data class EnrollFaceRequest(
     val embedding: String,
     val photo: String,
     val spoofScoreBp: Int,
-    val signature: String
+    val signature: String,
+    // FaceModels.MODEL_VERSION; the server only compares samples and templates of the same version.
+    val modelVersion: Int
 )
 
 data class ChallengeRequest(
@@ -150,7 +152,8 @@ data class MarkAttendanceRequest(
     val embedding: String,
     val photo: String,
     val spoofScoreBp: Int,
-    val signature: String
+    val signature: String,
+    val modelVersion: Int
 )
 
 object NetworkConfig {
