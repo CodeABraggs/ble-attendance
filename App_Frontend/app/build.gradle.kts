@@ -33,6 +33,10 @@ android {
     buildFeatures {
         compose = true
     }
+    androidResources {
+        // Face models are memory-mapped from assets, which requires them to be stored uncompressed.
+        noCompress += "tflite"
+    }
 }
 
 dependencies {
@@ -47,6 +51,13 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.retrofit.core)
     implementation(libs.retrofit.gson)
+    // On-device face verification: camera, face detection/landmarks, and TFLite model runtime.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.mlkit.face.detection)
+    implementation(libs.litert)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

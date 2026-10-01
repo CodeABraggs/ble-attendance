@@ -35,6 +35,7 @@ sealed class Screen {
     object StudentDashboard : Screen()
     object CreateClassroom : Screen()
     object JoinClassroom : Screen()
+    object FaceEnrollment : Screen()
     data class ClassroomDetails(val classroom: Classroom) : Screen()
     data class AttendanceSessionConfig(val classroom: Classroom) : Screen()
     data class AttendanceRecords(val sessionId: Int, val classroom: Classroom) : Screen()
@@ -116,7 +117,7 @@ class MainActivity : ComponentActivity() {
             is Screen.StudentLogin, is Screen.TeacherLogin -> BackHandler { vm.navigate(Screen.RoleSelection) }
             is Screen.StudentRegister -> BackHandler { vm.navigate(Screen.StudentLogin) }
             is Screen.TeacherRegister -> BackHandler { vm.navigate(Screen.TeacherLogin) }
-            is Screen.CreateClassroom, is Screen.JoinClassroom -> BackHandler { vm.goToDashboard() }
+            is Screen.CreateClassroom, is Screen.JoinClassroom, is Screen.FaceEnrollment -> BackHandler { vm.goToDashboard() }
             is Screen.ClassroomDetails -> BackHandler { leaveClassroom() }
             is Screen.AttendanceSessionConfig -> BackHandler { vm.navigate(Screen.ClassroomDetails(screen.classroom)) }
             is Screen.AttendanceRecords -> BackHandler { vm.navigate(Screen.ClassroomDetails(screen.classroom)) }
@@ -130,7 +131,7 @@ class MainActivity : ComponentActivity() {
             )
             is Screen.StudentLogin -> LoginScreen(
                 role = "STUDENT",
-                onLoginSuccess = { vm.navigate(Screen.StudentDashboard) },
+                onLoginSuccess = { vm.goToDashboard() },
                 onNavigateToRegister = { vm.navigate(Screen.StudentRegister) },
                 onBack = { vm.navigate(Screen.RoleSelection) }
             )
@@ -142,7 +143,7 @@ class MainActivity : ComponentActivity() {
             )
             is Screen.StudentRegister -> RegisterScreen(
                 role = "STUDENT",
-                onRegisterSuccess = { vm.navigate(Screen.StudentDashboard) },
+                onRegisterSuccess = { vm.goToDashboard() },
                 onBack = { vm.navigate(Screen.StudentLogin) }
             )
             is Screen.TeacherRegister -> RegisterScreen(
@@ -158,7 +159,12 @@ class MainActivity : ComponentActivity() {
             is Screen.StudentDashboard -> StudentDashboard(
                 onClassroomClick = { vm.openClassroom(it) },
                 onJoinClassroom = { vm.navigate(Screen.JoinClassroom) },
+                onSetUpFace = { vm.navigate(Screen.FaceEnrollment) },
                 onLogout = { vm.logout() }
+            )
+            is Screen.FaceEnrollment -> FaceEnrollmentScreen(
+                onEnrolled = { vm.navigate(Screen.StudentDashboard) },
+                onSkip = { vm.navigate(Screen.StudentDashboard) }
             )
             is Screen.CreateClassroom -> CreateClassroomScreen(
                 onClassroomCreated = { vm.navigate(Screen.TeacherDashboard) },

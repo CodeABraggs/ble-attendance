@@ -1,0 +1,5 @@
+MobileFaceNet.tflite and FaceAntiSpoofing.tflite come from
+https://github.com/syaringan357/Android-MobileFaceNet-MTCNN-FaceAntiSpoofing (MIT License).
+MobileFaceNet: input [2,112,112,3] float, (pixel-127.5)/128, output [2,192] embeddings.
+FaceAntiSpoofing: input [1,256,256,3] float, pixel/255, outputs Identity/Identity_1 [1,8];
+score = sum(|Identity[i]| * Identity_1[i]), below 0.2 means a real face.

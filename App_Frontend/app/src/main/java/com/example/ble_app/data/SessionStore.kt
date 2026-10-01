@@ -18,11 +18,12 @@ class SessionStore(context: Context) {
         val role = prefs.getString(KEY_ROLE, null)
         val userId = prefs.getInt(KEY_USER_ID, -1)
         val expiresAt = prefs.getLong(KEY_EXPIRES_AT, 0L)
+        val faceEnrolled = prefs.getBoolean(KEY_FACE_ENROLLED, false)
         if (email == null || role == null || userId < 0 || expiresAt <= System.currentTimeMillis()) {
             clear()
             return null
         }
-        return StoredSession(token, User(userId, email, role), expiresAt)
+        return StoredSession(token, User(userId, email, role, faceEnrolled), expiresAt)
     }
 
     fun save(session: StoredSession) {
@@ -32,6 +33,7 @@ class SessionStore(context: Context) {
             .putString(KEY_EMAIL, session.user.email)
             .putString(KEY_ROLE, session.user.role)
             .putLong(KEY_EXPIRES_AT, session.expiresAtEpochMillis)
+            .putBoolean(KEY_FACE_ENROLLED, session.user.faceEnrolled)
             .apply()
     }
 
@@ -47,5 +49,6 @@ class SessionStore(context: Context) {
         const val KEY_EMAIL = "email"
         const val KEY_ROLE = "role"
         const val KEY_EXPIRES_AT = "expires_at"
+        const val KEY_FACE_ENROLLED = "face_enrolled"
     }
 }

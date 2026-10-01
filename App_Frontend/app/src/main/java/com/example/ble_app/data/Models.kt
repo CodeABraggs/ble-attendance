@@ -7,7 +7,9 @@ enum class UserRole {
 data class User(
     val userId: Int,
     val email: String,
-    val role: String
+    val role: String,
+    // Students must enroll their face before they can mark attendance.
+    val faceEnrolled: Boolean = false
 )
 
 data class Classroom(
@@ -43,7 +45,23 @@ data class AttendanceSession(
 data class AttendanceRecord(
     val studentId: Int,
     val email: String,
-    val status: String
+    // PRESENT, ABSENT, LATE or PENDING_REVIEW (borderline face match awaiting the teacher)
+    val status: String,
+    val hasVerification: Boolean
+)
+
+data class AttendanceChallenge(
+    val nonce: String,
+    val actions: List<String>,
+    val expiresAtEpochMillis: Long
+)
+
+data class FaceVerification(
+    val referencePhoto: String?,
+    val attendancePhoto: String,
+    val similarity: Float,
+    val spoofScore: Float,
+    val reviewReason: String?
 )
 
 data class UpdateAttendanceRequest(

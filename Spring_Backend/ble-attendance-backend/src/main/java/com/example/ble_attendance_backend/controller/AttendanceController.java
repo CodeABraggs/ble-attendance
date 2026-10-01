@@ -4,8 +4,11 @@ import com.example.ble_attendance_backend.dto.AttendanceHistoryResponse;
 import com.example.ble_attendance_backend.dto.AttendanceRecordResponse;
 import com.example.ble_attendance_backend.dto.AttendanceSessionRequest;
 import com.example.ble_attendance_backend.dto.AttendanceSessionResponse;
+import com.example.ble_attendance_backend.dto.ChallengeRequest;
+import com.example.ble_attendance_backend.dto.ChallengeResponse;
 import com.example.ble_attendance_backend.dto.MarkAttendanceRequest;
 import com.example.ble_attendance_backend.dto.UpdateAttendanceRequest;
+import com.example.ble_attendance_backend.dto.VerificationResponse;
 import com.example.ble_attendance_backend.security.AuthenticatedUser;
 import com.example.ble_attendance_backend.service.AttendanceService;
 import jakarta.validation.Valid;
@@ -49,11 +52,23 @@ public class AttendanceController {
         return attendanceService.updateRecord(caller, sessionId, studentId, request);
     }
 
-    /** Marks the calling student present; requires a current beacon code from the teacher's device. */
+    /** Step 1: exchange a current beacon code for a one-time liveness challenge. */
+    @PostMapping("/attendance/sessions/{sessionId}/challenge")
+    public ChallengeResponse issueChallenge(AuthenticatedUser caller, @PathVariable Long sessionId,
+                                            @Valid @RequestBody ChallengeRequest request) {
+        return attendanceService.issueChallenge(caller, sessionId, request.beaconCode());
+    }
+
+    /** Step 2: submit the device-signed face sample for the challenge. */
     @PostMapping("/attendance/sessions/{sessionId}/mark")
     public AttendanceRecordResponse markPresent(AuthenticatedUser caller, @PathVariable Long sessionId,
                                                 @Valid @RequestBody MarkAttendanceRequest request) {
         return attendanceService.markPresent(caller, sessionId, request);
+    }
+
+    @GetMapping("/attendance/sessions/{sessionId}/students/{studentId}/verification")
+    public VerificationResponse getVerification(AuthenticatedUser caller, @PathVariable Long sessionId, @PathVariable Long studentId) {
+        return attendanceService.getVerification(caller, sessionId, studentId);
     }
 
     @GetMapping("/classes/{classId}/attendance/me")

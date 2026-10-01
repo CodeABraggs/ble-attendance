@@ -46,9 +46,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         currentScreen = Screen.ClassroomDetails(classroom)
     }
 
+    /** Home for the signed-in user; students who haven't enrolled their face are sent to enrollment first. */
     fun goToDashboard() {
-        currentScreen = homeScreenFor(Repository.currentUser.value?.role)
+        val user = Repository.currentUser.value
+        currentScreen = if (user?.role == "STUDENT" && !user.faceEnrolled && currentScreen.isAuthScreen) {
+            Screen.FaceEnrollment
+        } else {
+            homeScreenFor(user?.role)
+        }
     }
+
+    private val Screen.isAuthScreen: Boolean
+        get() = this is Screen.StudentLogin || this is Screen.StudentRegister
 
     fun logout() {
         stopBle()

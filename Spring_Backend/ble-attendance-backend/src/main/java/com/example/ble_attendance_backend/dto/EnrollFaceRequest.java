@@ -5,9 +5,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
-/** Completes a liveness challenge issued by the challenge endpoint. */
-public record MarkAttendanceRequest(
-        @NotBlank(message = "nonce is required") String nonce,
+public record EnrollFaceRequest(
         @NotBlank(message = "embedding is required") String embedding,
         @NotBlank(message = "photo is required") String photo,
         @NotNull(message = "spoofScoreBp is required") @Min(0) @Max(100_000) Integer spoofScoreBp,

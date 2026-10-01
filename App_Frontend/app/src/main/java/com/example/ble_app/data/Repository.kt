@@ -1,8 +1,13 @@
 package com.example.ble_app.data
 
 import android.content.Context
+import android.util.Base64
 import android.util.Log
+import com.example.ble_app.face.CapturedFace
+import com.example.ble_app.security.DeviceKey
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import retrofit2.HttpException
@@ -28,6 +33,7 @@ object Repository {
         sessionStore = store
         store.load()?.let { saved ->
             token = saved.token
+            tokenExpiresAt = saved.expiresAtEpochMillis
             _currentUser.value = saved.user
         }
     }
@@ -39,12 +45,40 @@ object Repository {
         if (token == rejectedToken) clearSession()
     }
 
+    private var tokenExpiresAt = 0L
+
     private fun startSession(response: LoginResponse): User {
-        val user = User(response.userId, response.email, response.role)
+        val user = User(response.userId, response.email, response.role, response.faceEnrolled)
         token = response.token
+        tokenExpiresAt = response.expiresAtEpochMillis
         sessionStore?.save(StoredSession(response.token, user, response.expiresAtEpochMillis))
         _currentUser.value = user
         return user
+    }
+
+    private fun updateUser(user: User) {
+        val currentToken = token ?: return
+        _currentUser.value = user
+        sessionStore?.save(StoredSession(currentToken, user, tokenExpiresAt))
+    }
+
+    /**
+     * Links the account to this phone's hardware key. A phone can belong to only one student, so if the
+     * server refuses (the phone is linked to someone else) the login is undone.
+     */
+    private suspend fun bindDeviceOrLogout(user: User) {
+        if (user.role != "STUDENT") return
+        try {
+            // Generating the hardware key the first time can take a moment; keep it off the main thread.
+            val publicKey = withContext(Dispatchers.Default) { DeviceKey.publicKeyBase64() }
+            NetworkConfig.apiService.bindDevice(BindDeviceRequest(publicKey))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            val message = parseError(e)
+            logout()
+            throw Exception(message)
+        }
     }
 
     private fun clearSession() {
@@ -96,20 +130,26 @@ object Repository {
         }
     }
 
-    suspend fun login(email: String, password: String, role: String): User = apiCall {
-        startSession(NetworkConfig.apiService.login(LoginRequest(email.trim(), password, role)))
+    suspend fun login(email: String, password: String, role: String): User {
+        val user = apiCall { startSession(NetworkConfig.apiService.login(LoginRequest(email.trim(), password, role))) }
+        bindDeviceOrLogout(user)
+        return user
     }
 
     /** Registers and signs the new user in. */
-    suspend fun register(email: String, password: String, role: String): User = apiCall {
-        startSession(NetworkConfig.apiService.register(RegisterRequest(email.trim(), password, role)))
+    suspend fun register(email: String, password: String, role: String): User {
+        val user = apiCall { startSession(NetworkConfig.apiService.register(RegisterRequest(email.trim(), password, role))) }
+        bindDeviceOrLogout(user)
+        return user
     }
 
     /** Checks the saved token with the server; a 401 signs the user out via the HTTP interceptor. */
     suspend fun validateSession() {
         if (token == null) return
         try {
-            NetworkConfig.apiService.me()
+            val me = NetworkConfig.apiService.me()
+            _currentUser.value?.let { user -> updateUser(user.copy(faceEnrolled = me.faceEnrolled)) }
+            if (!me.deviceBound) _currentUser.value?.let { bindDeviceOrLogout(it) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -178,7 +218,58 @@ object Repository {
         NetworkConfig.apiService.getMyAttendanceHistory(classId)
     }
 
-    suspend fun markAttendance(sessionId: Int, beaconCode: Int) = apiCall {
-        NetworkConfig.apiService.markAttendance(sessionId, MarkAttendanceRequest(beaconCode))
+    /** One-time face enrollment with a sample from the liveness check, signed by this phone's key. */
+    suspend fun enrollFace(face: CapturedFace) {
+        val user = _currentUser.value ?: throw Exception("Not logged in")
+        val sample = SignedSample(face)
+        apiCall {
+            NetworkConfig.apiService.enrollFace(
+                EnrollFaceRequest(
+                    embedding = sample.embedding,
+                    photo = sample.photo,
+                    spoofScoreBp = face.spoofScoreBp,
+                    signature = DeviceKey.sign("ENROLL|${user.userId}|${sample.digest}")
+                )
+            )
+        }
+        updateUser(user.copy(faceEnrolled = true))
+    }
+
+    /** Step 1 of marking attendance: trade the beacon code for a liveness challenge. */
+    suspend fun requestChallenge(sessionId: Int, beaconCode: Int): AttendanceChallenge = apiCall {
+        NetworkConfig.apiService.requestChallenge(sessionId, ChallengeRequest(beaconCode))
+    }
+
+    /** Step 2: send the face sample captured for the challenge. Returns the resulting record status. */
+    suspend fun markAttendance(sessionId: Int, nonce: String, face: CapturedFace): AttendanceRecord {
+        val sample = SignedSample(face)
+        return apiCall {
+            NetworkConfig.apiService.markAttendance(
+                sessionId,
+                MarkAttendanceRequest(
+                    nonce = nonce,
+                    embedding = sample.embedding,
+                    photo = sample.photo,
+                    spoofScoreBp = face.spoofScoreBp,
+                    signature = DeviceKey.sign("MARK|$sessionId|$nonce|${sample.digest}")
+                )
+            )
+        }
+    }
+
+    suspend fun getVerification(sessionId: Int, studentId: Int): FaceVerification = apiCall {
+        NetworkConfig.apiService.getVerification(sessionId, studentId)
+    }
+
+    suspend fun resetStudentFace(classId: Int, studentId: Int) = apiCall {
+        NetworkConfig.apiService.resetStudentFace(classId, studentId)
+    }
+
+    /** Encodes a face sample and the digest that is signed (must match FaceService.sampleDigest on the server). */
+    private class SignedSample(face: CapturedFace) {
+        private val embeddingBytes = face.embeddingBytes()
+        val embedding: String = Base64.encodeToString(embeddingBytes, Base64.NO_WRAP)
+        val photo: String = Base64.encodeToString(face.photoJpeg, Base64.NO_WRAP)
+        val digest = "${DeviceKey.sha256Hex(embeddingBytes)}|${DeviceKey.sha256Hex(face.photoJpeg)}|${face.spoofScoreBp}"
     }
 }

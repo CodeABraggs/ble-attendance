@@ -33,6 +33,10 @@ public class User {
     @Column(nullable = false, updatable = false)
     private Instant createdAt;
 
+    // Base64 X.509 public key of the phone's hardware-backed signing key; one phone per account.
+    @Column(unique = true, length = 512)
+    private String devicePublicKey;
+
     protected User() {
     }
 
@@ -49,4 +53,6 @@ public class User {
     public String getPassword() { return password; }
     public Role getRole() { return role; }
     public Instant getCreatedAt() { return createdAt; }
+    public String getDevicePublicKey() { return devicePublicKey; }
+    public void setDevicePublicKey(String devicePublicKey) { this.devicePublicKey = devicePublicKey; }
 }

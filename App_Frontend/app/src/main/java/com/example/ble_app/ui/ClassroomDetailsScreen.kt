@@ -15,10 +15,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.example.ble_app.bluetooth.BleAdvertiser
 import com.example.ble_app.bluetooth.BleScanner
+import com.example.ble_app.data.AttendanceChallenge
 import com.example.ble_app.data.AttendanceSession
 import com.example.ble_app.data.Classroom
 import com.example.ble_app.data.Repository
 import com.example.ble_app.data.StudentAttendanceHistoryRecord
+import com.example.ble_app.face.LivenessAction
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -50,6 +52,8 @@ fun ClassroomDetailsScreen(
     var studentStatusMessage by rememberSaveable { mutableStateOf("Click the button to scan for the classroom session.") }
     var attendanceMarkedSuccess by rememberSaveable { mutableStateOf(false) }
     var permissionMessage by remember { mutableStateOf<String?>(null) }
+    // Liveness challenge for the detected session; while set, the camera check replaces this screen.
+    var pendingChallenge by remember { mutableStateOf<Pair<Int, AttendanceChallenge>?>(null) }
 
     val scope = rememberCoroutineScope()
 
@@ -83,21 +87,50 @@ fun ClassroomDetailsScreen(
         refreshData()
     }
 
-    // Student: the scanner only reports beacons for this classroom; send the code to the server.
+    // Student step 1: the scanner only reports beacons for this classroom. Trade the beacon code for a
+    // liveness challenge, which proves the phone is in the room; the face check then proves who holds it.
     LaunchedEffect(detectedBeacon) {
         val beacon = detectedBeacon ?: return@LaunchedEffect
         if (isTeacher) return@LaunchedEffect
         bleScanner.stopScanning()
-        studentStatusMessage = "Teacher beacon detected. Verifying attendance..."
+        studentStatusMessage = "Teacher beacon detected. Preparing face verification..."
         try {
-            Repository.markAttendance(beacon.sessionId, beacon.code)
-            studentStatusMessage = "Attendance marked successfully."
-            attendanceMarkedSuccess = true
-            refreshData()
+            pendingChallenge = beacon.sessionId to Repository.requestChallenge(beacon.sessionId, beacon.code)
         } catch (e: Exception) {
-            studentStatusMessage = e.message ?: "Failed to mark attendance on the server."
+            studentStatusMessage = e.message ?: "Failed to start verification."
         }
         bleScanner.consumeDetection()
+    }
+
+    // Student step 2: complete the random actions on camera, then submit the signed face sample.
+    pendingChallenge?.let { (sessionId, challenge) ->
+        FaceCaptureScreen(
+            title = "Verify it's you",
+            actions = LivenessAction.parse(challenge.actions),
+            onCaptured = { face ->
+                pendingChallenge = null
+                studentStatusMessage = "Checking your face..."
+                scope.launch {
+                    try {
+                        val record = Repository.markAttendance(sessionId, challenge.nonce, face)
+                        if (record.status == "PENDING_REVIEW") {
+                            studentStatusMessage = "Your face match was not certain, so your teacher will review it."
+                        } else {
+                            studentStatusMessage = "Attendance marked successfully."
+                        }
+                        attendanceMarkedSuccess = true
+                        refreshData()
+                    } catch (e: Exception) {
+                        studentStatusMessage = e.message ?: "Failed to mark attendance on the server."
+                    }
+                }
+            },
+            onCancel = {
+                pendingChallenge = null
+                studentStatusMessage = "Verification cancelled. Scan again to retry."
+            }
+        )
+        return
     }
 
     Scaffold(
@@ -281,7 +314,11 @@ fun ClassroomDetailsScreen(
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (record.status == "PRESENT") Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+                                containerColor = when (record.status) {
+                                    "PRESENT" -> Color(0xFFE8F5E9)
+                                    "PENDING_REVIEW" -> Color(0xFFFFF3E0)
+                                    else -> Color(0xFFFFEBEE)
+                                }
                             )
                         ) {
                             Row(
@@ -296,9 +333,9 @@ fun ClassroomDetailsScreen(
                                     Text("${record.startTime} - ${record.endTime}", style = MaterialTheme.typography.bodyMedium)
                                 }
                                 Text(
-                                    text = record.status,
+                                    text = if (record.status == "PENDING_REVIEW") "IN REVIEW" else record.status,
                                     style = MaterialTheme.typography.titleLarge,
-                                    color = if (record.status == "PRESENT") Color(0xFF2E7D32) else Color(0xFFC62828)
+                                    color = statusColor(record.status)
                                 )
                             }
                         }
@@ -307,4 +344,10 @@ fun ClassroomDetailsScreen(
             }
         }
     }
+}
+
+fun statusColor(status: String): Color = when (status) {
+    "PRESENT" -> Color(0xFF2E7D32)
+    "PENDING_REVIEW" -> Color(0xFFE65100)
+    else -> Color(0xFFC62828)
 }

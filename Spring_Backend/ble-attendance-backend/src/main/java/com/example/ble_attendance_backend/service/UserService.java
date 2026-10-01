@@ -2,14 +2,17 @@ package com.example.ble_attendance_backend.service;
 
 import com.example.ble_attendance_backend.dto.LoginRequest;
 import com.example.ble_attendance_backend.dto.LoginResponse;
+import com.example.ble_attendance_backend.dto.MeResponse;
 import com.example.ble_attendance_backend.dto.RegisterRequest;
 import com.example.ble_attendance_backend.entity.User;
 import com.example.ble_attendance_backend.exception.BadRequestException;
 import com.example.ble_attendance_backend.exception.ConflictException;
 import com.example.ble_attendance_backend.exception.ResourceNotFoundException;
 import com.example.ble_attendance_backend.exception.UnauthorizedException;
+import com.example.ble_attendance_backend.repository.FaceProfileRepository;
 import com.example.ble_attendance_backend.repository.UserRepository;
 import com.example.ble_attendance_backend.security.AuthTokenService;
+import com.example.ble_attendance_backend.security.AuthenticatedUser;
 import java.util.Locale;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -20,11 +23,14 @@ public class UserService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final AuthTokenService tokenService;
+    private final FaceProfileRepository faceProfileRepository;
 
-    public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder, AuthTokenService tokenService) {
+    public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder, AuthTokenService tokenService,
+                       FaceProfileRepository faceProfileRepository) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.tokenService = tokenService;
+        this.faceProfileRepository = faceProfileRepository;
     }
 
     @Transactional
@@ -36,7 +42,7 @@ public class UserService {
         if (request.role() != null && request.role() != user.getRole()) {
             throw new BadRequestException("This account is registered as a " + user.getRole() + ", not a " + request.role());
         }
-        return LoginResponse.from(user, tokenService.issue(user));
+        return LoginResponse.from(user, tokenService.issue(user), faceProfileRepository.existsByUserId(user.getId()));
     }
 
     @Transactional
@@ -46,7 +52,14 @@ public class UserService {
             throw new ConflictException("An account with that email already exists");
         }
         User user = userRepository.save(new User(email, passwordEncoder.encode(request.password()), request.role()));
-        return LoginResponse.from(user, tokenService.issue(user));
+        return LoginResponse.from(user, tokenService.issue(user), false);
+    }
+
+    @Transactional(readOnly = true)
+    public MeResponse me(AuthenticatedUser caller) {
+        User user = requireUser(caller.id());
+        return new MeResponse(user.getId(), user.getEmail(), user.getRole(),
+                faceProfileRepository.existsByUserId(user.getId()), user.getDevicePublicKey() != null);
     }
 
     @Transactional(readOnly = true)

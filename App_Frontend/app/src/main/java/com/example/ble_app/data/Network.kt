@@ -17,10 +17,20 @@ interface ApiService {
     suspend fun login(@Body request: LoginRequest): LoginResponse
 
     @GET("api/auth/me")
-    suspend fun me(): Unit
+    suspend fun me(): MeResponse
 
     @POST("api/auth/logout")
     suspend fun logout(@Header("Authorization") authorization: String): Unit
+
+    // DEVICE AND FACE
+    @PUT("api/devices/me")
+    suspend fun bindDevice(@Body request: BindDeviceRequest): Unit
+
+    @POST("api/face/enroll")
+    suspend fun enrollFace(@Body request: EnrollFaceRequest): Unit
+
+    @DELETE("api/classrooms/{classId}/students/{studentId}/face")
+    suspend fun resetStudentFace(@Path("classId") classId: Int, @Path("studentId") studentId: Int): Unit
 
     // CLASSROOM (the caller is identified by the bearer token)
     @POST("api/classrooms")
@@ -58,11 +68,23 @@ interface ApiService {
     @GET("api/classes/{classId}/attendance/me")
     suspend fun getMyAttendanceHistory(@Path("classId") classId: Int): List<StudentAttendanceHistoryRecord>
 
+    @POST("api/attendance/sessions/{sessionId}/challenge")
+    suspend fun requestChallenge(
+        @Path("sessionId") sessionId: Int,
+        @Body request: ChallengeRequest
+    ): AttendanceChallenge
+
     @POST("api/attendance/sessions/{sessionId}/mark")
     suspend fun markAttendance(
         @Path("sessionId") sessionId: Int,
         @Body request: MarkAttendanceRequest
-    ): Unit
+    ): AttendanceRecord
+
+    @GET("api/attendance/sessions/{sessionId}/students/{studentId}/verification")
+    suspend fun getVerification(
+        @Path("sessionId") sessionId: Int,
+        @Path("studentId") studentId: Int
+    ): FaceVerification
 }
 
 data class RegisterRequest(
@@ -82,7 +104,33 @@ data class LoginResponse(
     val email: String,
     val role: String,
     val token: String,
-    val expiresAtEpochMillis: Long
+    val expiresAtEpochMillis: Long,
+    val faceEnrolled: Boolean
+)
+
+data class MeResponse(
+    val userId: Int,
+    val email: String,
+    val role: String,
+    val faceEnrolled: Boolean,
+    val deviceBound: Boolean
+)
+
+data class BindDeviceRequest(
+    val publicKey: String
+)
+
+// Face sample fields: embedding is base64 of 192 little-endian floats, photo is base64 JPEG,
+// signature is the device key's signature over the payload built in Repository.
+data class EnrollFaceRequest(
+    val embedding: String,
+    val photo: String,
+    val spoofScoreBp: Int,
+    val signature: String
+)
+
+data class ChallengeRequest(
+    val beaconCode: Int
 )
 
 data class CreateSessionRequest(
@@ -94,7 +142,11 @@ data class CreateSessionRequest(
 )
 
 data class MarkAttendanceRequest(
-    val beaconCode: Int
+    val nonce: String,
+    val embedding: String,
+    val photo: String,
+    val spoofScoreBp: Int,
+    val signature: String
 )
 
 object NetworkConfig {

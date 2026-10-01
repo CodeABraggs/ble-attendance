@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 fun StudentDashboard(
     onClassroomClick: (Classroom) -> Unit,
     onJoinClassroom: () -> Unit,
+    onSetUpFace: () -> Unit,
     onLogout: () -> Unit
 ) {
     val user by Repository.currentUser.collectAsState()
@@ -57,6 +58,19 @@ fun StudentDashboard(
         Column(modifier = Modifier.padding(padding).padding(16.dp).fillMaxSize()) {
             Text("Welcome, ${user?.email?.substringBefore("@") ?: "Student"}", style = MaterialTheme.typography.headlineSmall)
             Spacer(modifier = Modifier.height(16.dp))
+            if (user?.faceEnrolled == false) {
+                Card(
+                    onClick = onSetUpFace,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Set up face verification", style = MaterialTheme.typography.titleMedium)
+                        Text("Required before you can mark attendance. Tap to start.", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+            }
             Text("My Classes", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
 

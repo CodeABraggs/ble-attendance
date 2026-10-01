@@ -2,6 +2,7 @@ package com.example.ble_attendance_backend.controller;
 
 import com.example.ble_attendance_backend.dto.LoginRequest;
 import com.example.ble_attendance_backend.dto.LoginResponse;
+import com.example.ble_attendance_backend.dto.MeResponse;
 import com.example.ble_attendance_backend.dto.RegisterRequest;
 import com.example.ble_attendance_backend.security.AuthInterceptor;
 import com.example.ble_attendance_backend.security.AuthTokenService;
@@ -38,8 +39,8 @@ public class AuthController {
     }
 
     @GetMapping("/me")
-    public AuthenticatedUser me(AuthenticatedUser caller) {
-        return caller;
+    public MeResponse me(AuthenticatedUser caller) {
+        return userService.me(caller);
     }
 
     @PostMapping("/logout")
